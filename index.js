@@ -56,7 +56,7 @@ const upload = multer({ storage: storage });
 app.use("/images", express.static("upload/images"));
 
 app.post("/upload", upload.array("product", 4), (req, res) => {
-  const image_urls = req.files.map(file => `http://localhost:${port}/images/${file.filename}`);
+  const image_urls = req.files.map(file => `${req.protocol}://${req.get('host')}/images/${file.filename}`);
   res.json({
     success: 1,
     image_urls: image_urls,
@@ -80,6 +80,10 @@ const Product = mongoose.model("Product", {
     required: true,
   },
   category: {
+    type: String,
+    required: true,
+  },
+  description: {
     type: String,
     required: true,
   },
