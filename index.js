@@ -13,6 +13,7 @@ const { error } = require("console");
 const bcrypt = require("bcryptjs");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { type } = require('os');
 
 app.use(helmet());
 
@@ -213,6 +214,32 @@ app.post("/signup", async (req, res) => {
   res.json({ success: true, token });
 });
 
+//for security
+const verifyToken = (req, res, next) => {
+  const bearerHeader = req.headers["authorization"];
+
+  if (typeof bearerHeader === "undefined") {
+    return res
+      .status(401)
+      .json({ success: false, message: "Unauthorized - No token provided" });
+  }
+
+  const token = bearerHeader.split(" ")[1];
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Invalid or expired token" });
+    }
+
+    req.user = user;
+    next();
+  });
+};
+
+
+
 // Creating Endpoint for user login
 
 app.post("/login", async (req, res) => {
@@ -241,32 +268,32 @@ const passCompare = await bcrypt.compare(req.body.password, user.password);
   //   setUserData({ _id: userId }); // <-- Properly store user ID
   //   localStorage.setItem("token", data.token); // optionally persist
   // }>
-  if (passCompare) {
-  const data = { user: { id: user.id } };
-  const token = jwt.sign(data, process.env.JWT_SECRET);
-  res.json({ success: true, token });
-}
+//   if (passCompare) {
+//   const data = { user: { id: user.id } };
+//   const token = jwt.sign(data, process.env.JWT_SECRET);
+//   res.json({ success: true, token });
+// }
 
 });
 
 // Get login user details
 
-app.get("/getuser", async (req, res) => {
-  const token = req.header("auth-token");
-  if (!token) {
-    return res.status(401).json({ success: false, message: "Access Denied" });
-  }
-
+app.get("/getuser", verifyToken, async (req, res) => {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const userId = decoded.user.id;
+    const userId = req.user.user.id; // use the decoded user info from middleware
+    const user = await Users.findById(userId).select("-password");
 
-    const user = await Users.findById(userId).select("-password"); // Don't send password
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
     res.json({ success: true, user });
   } catch (err) {
-    res.status(400).json({ success: false, message: "Invalid Token" });
+    console.error("Error in /getuser:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
+
 
 // schema for cart
 
@@ -385,6 +412,75 @@ app.get("/cart/:userId", async (req, res) => {
   }
 });
 
+
+// Schema Creating for Address model
+
+const Address = mongoose.model("Address", {
+  userId: {
+    type: String, 
+    required: true,
+  },
+  fullName: String,
+  phoneNumber: String,
+  pincode: String,
+  area: String,
+  city: String,
+  state: String,
+});
+
+
+//creating endpoints for adding address
+app.post("/address/add", verifyToken, async (req, res) => {
+  const { fullName, phoneNumber, pincode, area, city, state } = req.body;
+
+  try {
+    const address = new Address({
+      userId: req.user.id,
+      fullName,
+      phoneNumber,
+      pincode,
+      area,
+      city,
+      state,
+    });
+
+    await address.save();
+    res.json({ success: true, message: "Address added successfully", address });
+  } catch (error) {
+    console.error("Add address error:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+//api to fetch address
+app.get("/address/get", verifyToken, async (req, res) => {
+  try {
+    const addresses = await Address.find({ userId: req.user.id });
+    res.json({ success: true, addresses });
+  } catch (error) {
+    console.error("Get address error:", error);
+    res.status(500).json({ success: false });
+  }
+});
+
+// Delete a specific address by ID
+app.delete("/address/delete/:id", verifyToken, async (req, res) => {
+  try {
+    const address = await Address.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user.id,
+    });
+
+    if (!address) {
+      return res.status(404).json({ success: false, message: "Address not found" });
+    }
+
+    res.json({ success: true, message: "Address deleted" });
+  } catch (error) {
+    console.error("Delete address error:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
 
 
 app.listen(port, (error) => {
