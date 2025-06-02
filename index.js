@@ -280,7 +280,7 @@ const passCompare = await bcrypt.compare(req.body.password, user.password);
 
 app.get("/getuser", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.user.id; // use the decoded user info from middleware
+    const userId = req.user.id; // use the decoded user info from middleware
     const user = await Users.findById(userId).select("-password");
 
     if (!user) {
@@ -481,6 +481,107 @@ app.delete("/address/delete/:id", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
+
+
+//schema for order
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  addressId: { type: mongoose.Schema.Types.ObjectId, ref: "Address", required: true },
+  items: [
+    {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+      quantity: { type: Number, required: true },
+      priceAtPurchase: { type: Number, required: true },
+    }
+  ],
+  totalAmount: { type: Number, required: true },
+  paymentStatus: { type: String, enum: ["pending", "paid"], default: "pending" },
+  orderStatus: { type: String, enum: ["placed", "shipped", "delivered", "cancelled"], default: "placed" },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Order = mongoose.model("Order", orderSchema);  // <-- ADD THIS
+
+
+// POST /order/create
+app.post("/order/create", verifyToken, async (req, res) => {
+  try {
+    const { userId, addressId, items } = req.body;
+
+    if (!userId || !addressId || !items || items.length === 0) {
+      return res.status(400).json({ message: "Missing required order data" });
+    }
+
+    let totalAmount = 0;
+    const orderItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+
+      const itemTotal = product.new_price * item.quantity;
+      totalAmount += itemTotal;
+
+      orderItems.push({
+        productId: product._id,
+        quantity: item.quantity,
+        priceAtPurchase: product.new_price
+      });
+    }
+
+    const newOrder = await Order.create({
+      userId,
+      addressId,
+      items: orderItems,
+      totalAmount
+    });
+
+    return res.status(201).json({ success: true, order: newOrder });
+  } catch (err) {
+    console.error("Order creation error:", err);
+    return res.status(500).json({ message: "Server error while creating order" });
+  }
+});
+
+//api to fetch myorder
+app.get("/order/myorders", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id; // or req.user._id depending on your JWT payload
+
+    const orders = await Order.find({ userId })
+      .populate("items.productId")  // populate product details
+      .populate("addressId")        // populate address details
+      .sort({ createdAt: -1 });
+
+    // Format the data to match frontend expected shape (optional)
+    const formattedOrders = orders.map((order) => ({
+      items: order.items.map((item) => ({
+        product: {
+          name: item.productId.name,
+          // add other product fields if needed
+        },
+        quantity: item.quantity,
+      })),
+      address: {
+        fullName: order.addressId.fullName,
+        area: order.addressId.area,
+        city: order.addressId.city,
+        state: order.addressId.state,
+        phoneNumber: order.addressId.phoneNumber,
+      },
+      amount: order.totalAmount,
+      date: order.createdAt,
+      status: order.orderStatus,
+      paymentStatus: order.paymentStatus,
+    }));
+
+    res.json({ success: true, orders: formattedOrders });
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ success: false, message: "Server error fetching orders" });
+  }
+});
+
 
 
 app.listen(port, (error) => {
