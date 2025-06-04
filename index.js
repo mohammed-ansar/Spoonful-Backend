@@ -1,5 +1,4 @@
-require('dotenv').config();
-
+require("dotenv").config();
 
 const port = process.env.PORT || 5000;
 const express = require("express");
@@ -13,7 +12,7 @@ const { error } = require("console");
 const bcrypt = require("bcryptjs");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const { type } = require('os');
+const { type } = require("os");
 
 app.use(helmet());
 
@@ -23,15 +22,14 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-
 app.use(express.json());
 app.use(cors());
 
 //Database connection with mongodb
-mongoose.connect(process.env.MONGODB_URI)
+mongoose
+  .connect(process.env.MONGODB_URI)
   .then(() => console.log("Connected to MongoDB"))
-  .catch(err => console.error("MongoDB connection error:", err));
-
+  .catch((err) => console.error("MongoDB connection error:", err));
 
 //Api creation
 
@@ -57,13 +55,14 @@ const upload = multer({ storage: storage });
 app.use("/images", express.static("upload/images"));
 
 app.post("/upload", upload.array("product", 4), (req, res) => {
-  const image_urls = req.files.map(file => `${req.protocol}://${req.get('host')}/images/${file.filename}`);
+  const image_urls = req.files.map(
+    (file) => `${req.protocol}://${req.get("host")}/images/${file.filename}`
+  );
   res.json({
     success: 1,
     image_urls: image_urls,
   });
 });
-
 
 //Schema for Creating Products
 
@@ -176,6 +175,11 @@ const Users = mongoose.model("Users", {
     type: Date,
     default: Date.now,
   },
+  role: {
+    type: String,
+    enum: ["user", "admin"],
+    default: "user",
+  },
 });
 
 // Creating Endpoint for user registration
@@ -183,12 +187,10 @@ const Users = mongoose.model("Users", {
 app.post("/signup", async (req, res) => {
   let check = await Users.findOne({ email: req.body.email });
   if (check) {
-    return res
-      .status(400)
-      .json({
-        success: false,
-        errors: "Existing user found with same email address",
-      });
+    return res.status(400).json({
+      success: false,
+      errors: "Existing user found with same email address",
+    });
   }
   let cart = {};
   for (let i = 0; i < 300; i++) {
@@ -200,6 +202,7 @@ app.post("/signup", async (req, res) => {
     email: req.body.email,
     password: hashedPassword,
     cartData: cart,
+    role: "user",
   });
 
   await user.save();
@@ -238,29 +241,26 @@ const verifyToken = (req, res, next) => {
   });
 };
 
-
-
 // Creating Endpoint for user login
 
 app.post("/login", async (req, res) => {
   let user = await Users.findOne({ email: req.body.email });
   if (user) {
-const passCompare = await bcrypt.compare(req.body.password, user.password);
+    const passCompare = await bcrypt.compare(req.body.password, user.password);
     if (passCompare) {
       const data = {
         user: {
           id: user.id,
+          role: user.role,
         },
       };
       const token = jwt.sign(data, process.env.JWT_SECRET);
       res.json({ success: true, token });
+    } else {
+      res.json({ success: false, errors: "Wrong Password" });
     }
-    else {
-        res.json({ success: false, errors: "Wrong Password" });
-      }
-  }
-  else {
-      res.json({ success: false, errors: "Wrong Email Id" });
+  } else {
+    res.json({ success: false, errors: "Wrong Email Id" });
   }
   // i<f (data.success) {
   //   const decoded = jwt.verify(token, process.env.JWT_SECRET); // <-- GET user.id here
@@ -268,23 +268,24 @@ const passCompare = await bcrypt.compare(req.body.password, user.password);
   //   setUserData({ _id: userId }); // <-- Properly store user ID
   //   localStorage.setItem("token", data.token); // optionally persist
   // }>
-//   if (passCompare) {
-//   const data = { user: { id: user.id } };
-//   const token = jwt.sign(data, process.env.JWT_SECRET);
-//   res.json({ success: true, token });
-// }
-
+  //   if (passCompare) {
+  //   const data = { user: { id: user.id } };
+  //   const token = jwt.sign(data, process.env.JWT_SECRET);
+  //   res.json({ success: true, token });
+  // }
 });
 
 // Get login user details
 
 app.get("/getuser", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id; // use the decoded user info from middleware
+    const userId = req.user.id;
     const user = await Users.findById(userId).select("-password");
 
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     res.json({ success: true, user });
@@ -294,11 +295,14 @@ app.get("/getuser", verifyToken, async (req, res) => {
   }
 });
 
-
 // schema for cart
 
 const CartItemSchema = new mongoose.Schema({
-  productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+  productId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Product",
+    required: true,
+  },
   quantity: { type: Number, required: true, default: 1 },
 });
 
@@ -317,7 +321,9 @@ app.post("/cart/add", async (req, res) => {
   console.log("Adding to cart - userId:", userId, "productId:", productId);
 
   if (!userId || !productId) {
-    return res.status(400).json({ success: false, message: "Missing userId or productId" });
+    return res
+      .status(400)
+      .json({ success: false, message: "Missing userId or productId" });
   }
 
   try {
@@ -327,7 +333,9 @@ app.post("/cart/add", async (req, res) => {
       cart = new Cart({ userId, items: [] });
     }
 
-    const existingItem = cart.items.find(item => item.productId.toString() === productId);
+    const existingItem = cart.items.find(
+      (item) => item.productId.toString() === productId
+    );
 
     if (existingItem) {
       existingItem.quantity += quantity;
@@ -344,8 +352,6 @@ app.post("/cart/add", async (req, res) => {
   }
 });
 
-
-
 // POST /cart/update
 app.post("/cart/update", async (req, res) => {
   const { userId, productId, quantity } = req.body;
@@ -353,14 +359,24 @@ app.post("/cart/update", async (req, res) => {
   try {
     const cart = await Cart.findOne({ userId });
 
-    if (!cart) return res.status(404).json({ success: false, message: "Cart not found" });
+    if (!cart)
+      return res
+        .status(404)
+        .json({ success: false, message: "Cart not found" });
 
-    const item = cart.items.find(item => item.productId.toString() === productId);
+    const item = cart.items.find(
+      (item) => item.productId.toString() === productId
+    );
 
-    if (!item) return res.status(404).json({ success: false, message: "Product not in cart" });
+    if (!item)
+      return res
+        .status(404)
+        .json({ success: false, message: "Product not in cart" });
 
     if (quantity <= 0) {
-      cart.items = cart.items.filter(item => item.productId.toString() !== productId);
+      cart.items = cart.items.filter(
+        (item) => item.productId.toString() !== productId
+      );
     } else {
       item.quantity = quantity;
     }
@@ -374,7 +390,6 @@ app.post("/cart/update", async (req, res) => {
   }
 });
 
-
 // POST /cart/remove
 app.post("/cart/remove", async (req, res) => {
   const { userId, productId } = req.body;
@@ -384,7 +399,9 @@ app.post("/cart/remove", async (req, res) => {
 
     if (!cart) return res.status(404).json({ success: false });
 
-    cart.items = cart.items.filter(item => item.productId.toString() !== productId);
+    cart.items = cart.items.filter(
+      (item) => item.productId.toString() !== productId
+    );
 
     await cart.save();
 
@@ -395,11 +412,12 @@ app.post("/cart/remove", async (req, res) => {
   }
 });
 
-
 // GET /cart/:userId
 app.get("/cart/:userId", async (req, res) => {
   try {
-    const cart = await Cart.findOne({ userId: req.params.userId }).populate("items.productId");
+    const cart = await Cart.findOne({ userId: req.params.userId }).populate(
+      "items.productId"
+    );
 
     if (!cart) {
       return res.json({ success: true, items: [] });
@@ -412,12 +430,11 @@ app.get("/cart/:userId", async (req, res) => {
   }
 });
 
-
 // Schema Creating for Address model
 
 const Address = mongoose.model("Address", {
   userId: {
-    type: String, 
+    type: String,
     required: true,
   },
   fullName: String,
@@ -427,7 +444,6 @@ const Address = mongoose.model("Address", {
   city: String,
   state: String,
 });
-
 
 //creating endpoints for adding address
 app.post("/address/add", verifyToken, async (req, res) => {
@@ -472,7 +488,9 @@ app.delete("/address/delete/:id", verifyToken, async (req, res) => {
     });
 
     if (!address) {
-      return res.status(404).json({ success: false, message: "Address not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Address not found" });
     }
 
     res.json({ success: true, message: "Address deleted" });
@@ -482,26 +500,40 @@ app.delete("/address/delete/:id", verifyToken, async (req, res) => {
   }
 });
 
-
 //schema for order
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  addressId: { type: mongoose.Schema.Types.ObjectId, ref: "Address", required: true },
+  addressId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Address",
+    required: true,
+  },
   items: [
     {
-      productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+      productId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Product",
+        required: true,
+      },
       quantity: { type: Number, required: true },
       priceAtPurchase: { type: Number, required: true },
-    }
+    },
   ],
   totalAmount: { type: Number, required: true },
-  paymentStatus: { type: String, enum: ["pending", "paid"], default: "pending" },
-  orderStatus: { type: String, enum: ["placed", "shipped", "delivered", "cancelled"], default: "placed" },
-  createdAt: { type: Date, default: Date.now }
+  paymentStatus: {
+    type: String,
+    enum: ["pending", "paid"],
+    default: "pending",
+  },
+  orderStatus: {
+    type: String,
+    enum: ["placed", "shipped", "delivered", "cancelled"],
+    default: "placed",
+  },
+  createdAt: { type: Date, default: Date.now },
 });
 
-const Order = mongoose.model("Order", orderSchema);  // <-- ADD THIS
-
+const Order = mongoose.model("Order", orderSchema); // <-- ADD THIS
 
 // POST /order/create
 app.post("/order/create", verifyToken, async (req, res) => {
@@ -517,7 +549,8 @@ app.post("/order/create", verifyToken, async (req, res) => {
 
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) return res.status(404).json({ message: "Product not found" });
+      if (!product)
+        return res.status(404).json({ message: "Product not found" });
 
       const itemTotal = product.new_price * item.quantity;
       totalAmount += itemTotal;
@@ -525,7 +558,7 @@ app.post("/order/create", verifyToken, async (req, res) => {
       orderItems.push({
         productId: product._id,
         quantity: item.quantity,
-        priceAtPurchase: product.new_price
+        priceAtPurchase: product.new_price,
       });
     }
 
@@ -533,32 +566,86 @@ app.post("/order/create", verifyToken, async (req, res) => {
       userId,
       addressId,
       items: orderItems,
-      totalAmount
+      totalAmount,
     });
 
     return res.status(201).json({ success: true, order: newOrder });
   } catch (err) {
     console.error("Order creation error:", err);
-    return res.status(500).json({ message: "Server error while creating order" });
+    return res
+      .status(500)
+      .json({ message: "Server error while creating order" });
   }
 });
 
 //api to fetch myorder
-app.get("/order/myorders", verifyToken, async (req, res) => {
-  try {
-    const userId = req.user.id; // or req.user._id depending on your JWT payload
+// app.get("/order/myorders", verifyToken, async (req, res) => {
+//   try {
+//     const userId = req.user.id; // or req.user._id depending on your JWT payload
 
-    const orders = await Order.find({ userId })
-      .populate("items.productId")  // populate product details
-      .populate("addressId")        // populate address details
+//     const orders = await Order.find({ userId })
+//       .populate("items.productId") // populate product details
+//       .populate("addressId") // populate address details
+//       .sort({ createdAt: -1 });
+
+//     // Format the data to match frontend expected shape (optional)
+//     const formattedOrders = orders.map((order) => ({
+//       items: order.items.map((item) => ({
+//         product: {
+//           name: item.productId.name,
+//           // add other product fields if needed
+//         },
+//         quantity: item.quantity,
+//       })),
+//       address: {
+//         fullName: order.addressId.fullName,
+//         area: order.addressId.area,
+//         city: order.addressId.city,
+//         state: order.addressId.state,
+//         phoneNumber: order.addressId.phoneNumber,
+//       },
+//       amount: order.totalAmount,
+//       date: order.createdAt,
+//       status: order.orderStatus,
+//       paymentStatus: order.paymentStatus,
+//     }));
+
+//     res.json({ success: true, orders: formattedOrders });
+//   } catch (error) {
+//     console.error("Error fetching orders:", error);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Server error fetching orders" });
+//   }
+// });
+
+// // Order Model Example
+// const Orders = mongoose.model("Orders", {
+//   userId: String,
+//   items: Array,
+//   amount: Number,
+//   address: Object,
+//   date: Date,
+// });
+
+app.get("/admin/orders", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await Users.findById(userId);
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const orders = await Order.find({})
+      .populate("items.productId")
+      .populate("addressId")
       .sort({ createdAt: -1 });
 
-    // Format the data to match frontend expected shape (optional)
     const formattedOrders = orders.map((order) => ({
       items: order.items.map((item) => ({
         product: {
           name: item.productId.name,
-          // add other product fields if needed
         },
         quantity: item.quantity,
       })),
@@ -577,8 +664,8 @@ app.get("/order/myorders", verifyToken, async (req, res) => {
 
     res.json({ success: true, orders: formattedOrders });
   } catch (error) {
-    console.error("Error fetching orders:", error);
-    res.status(500).json({ success: false, message: "Server error fetching orders" });
+    console.error("Error fetching all orders:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
