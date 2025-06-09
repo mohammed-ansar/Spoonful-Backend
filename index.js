@@ -8,11 +8,13 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const cors = require("cors");
-const { error } = require("console");
+// const { error } = require("console");
 const bcrypt = require("bcryptjs");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const { type } = require("os");
+// const { type } = require("os");
+const Razorpay = require("razorpay");
+const crypto = require("crypto");
 
 app.use(helmet());
 
@@ -520,6 +522,11 @@ const orderSchema = new mongoose.Schema({
     },
   ],
   totalAmount: { type: Number, required: true },
+  paymentMethod: {
+    type: String,
+    enum: ["cod", "razorpay"],
+    required: true,
+  },
   paymentStatus: {
     type: String,
     enum: ["pending", "paid"],
@@ -530,18 +537,32 @@ const orderSchema = new mongoose.Schema({
     enum: ["placed", "shipped", "delivered", "cancelled"],
     default: "placed",
   },
+  razorpayOrderId: { type: String },
+  razorpayPaymentId: { type: String },
+  razorpaySignature: { type: String },
   createdAt: { type: Date, default: Date.now },
 });
 
-const Order = mongoose.model("Order", orderSchema); // <-- ADD THIS
+const Order = mongoose.model("Order", orderSchema);
 
 // POST /order/create
 app.post("/order/create", verifyToken, async (req, res) => {
   try {
-    const { userId, addressId, items } = req.body;
+    const { addressId, items, paymentMethod, paymentStatus, razorpayOrderId } =
+      req.body;
+
+    const userId = req.user.id;
 
     if (!userId || !addressId || !items || items.length === 0) {
       return res.status(400).json({ message: "Missing required order data" });
+    }
+
+    // ✅ If it's Razorpay, prevent duplicate
+    if (paymentMethod === "razorpay" && razorpayOrderId) {
+      const existing = await Order.findOne({ razorpayOrderId });
+      if (existing) {
+        return res.status(400).json({ message: "Duplicate Razorpay order" });
+      }
     }
 
     let totalAmount = 0;
@@ -567,6 +588,9 @@ app.post("/order/create", verifyToken, async (req, res) => {
       addressId,
       items: orderItems,
       totalAmount,
+      paymentMethod,
+      paymentStatus: paymentStatus || "pending",
+      razorpayOrderId,
     });
 
     return res.status(201).json({ success: true, order: newOrder });
@@ -579,54 +603,55 @@ app.post("/order/create", verifyToken, async (req, res) => {
 });
 
 //api to fetch myorder
-// app.get("/order/myorders", verifyToken, async (req, res) => {
-//   try {
-//     const userId = req.user.id; // or req.user._id depending on your JWT payload
+app.get("/order/myorders", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id; // or req.user._id depending on your JWT payload
 
-//     const orders = await Order.find({ userId })
-//       .populate("items.productId") // populate product details
-//       .populate("addressId") // populate address details
-//       .sort({ createdAt: -1 });
+    const orders = await Order.find({ userId })
+      .populate("items.productId") // populate product details
+      .populate("addressId") // populate address details
+      .sort({ createdAt: -1 });
 
-//     // Format the data to match frontend expected shape (optional)
-//     const formattedOrders = orders.map((order) => ({
-//       items: order.items.map((item) => ({
-//         product: {
-//           name: item.productId.name,
-//           // add other product fields if needed
-//         },
-//         quantity: item.quantity,
-//       })),
-//       address: {
-//         fullName: order.addressId.fullName,
-//         area: order.addressId.area,
-//         city: order.addressId.city,
-//         state: order.addressId.state,
-//         phoneNumber: order.addressId.phoneNumber,
-//       },
-//       amount: order.totalAmount,
-//       date: order.createdAt,
-//       status: order.orderStatus,
-//       paymentStatus: order.paymentStatus,
-//     }));
+    // Format the data to match frontend expected shape (optional)
+    const formattedOrders = orders.map((order) => ({
+      items: order.items.map((item) => ({
+        product: {
+          name: item.productId.name,
+          // add other product fields if needed
+        },
+        quantity: item.quantity,
+      })),
+      address: {
+        fullName: order.addressId.fullName,
+        area: order.addressId.area,
+        city: order.addressId.city,
+        state: order.addressId.state,
+        phoneNumber: order.addressId.phoneNumber,
+      },
+      amount: order.totalAmount,
+      date: order.createdAt,
+      status: order.orderStatus,
+      paymentMethod: order.paymentMethod,
+      paymentStatus: order.paymentStatus,
+    }));
 
-//     res.json({ success: true, orders: formattedOrders });
-//   } catch (error) {
-//     console.error("Error fetching orders:", error);
-//     res
-//       .status(500)
-//       .json({ success: false, message: "Server error fetching orders" });
-//   }
-// });
+    res.json({ success: true, orders: formattedOrders });
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Server error fetching orders" });
+  }
+});
 
-// // Order Model Example
-// const Orders = mongoose.model("Orders", {
-//   userId: String,
-//   items: Array,
-//   amount: Number,
-//   address: Object,
-//   date: Date,
-// });
+// Order Model Example
+const Orders = mongoose.model("Orders", {
+  userId: String,
+  items: Array,
+  amount: Number,
+  address: Object,
+  date: Date,
+});
 
 app.get("/admin/orders", verifyToken, async (req, res) => {
   try {
@@ -659,6 +684,7 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
       amount: order.totalAmount,
       date: order.createdAt,
       status: order.orderStatus,
+      paymentMethod: order.paymentMethod,
       paymentStatus: order.paymentStatus,
     }));
 
@@ -669,7 +695,123 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
   }
 });
 
+//api for razorpay
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
+app.post("/razorpay/create-order", verifyToken, async (req, res) => {
+  try {
+    const { addressId, items } = req.body;
+    const userId = req.user.id;
+
+    if (!userId || !addressId || !items || items.length === 0) {
+      return res.status(400).json({ message: "Missing required data" });
+    }
+
+    let totalAmount = 0;
+    const orderItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product)
+        return res.status(404).json({ message: "Product not found" });
+
+      const itemTotal = product.new_price * item.quantity;
+      totalAmount += itemTotal;
+
+      orderItems.push({
+        productId: product._id,
+        quantity: item.quantity,
+        priceAtPurchase: product.new_price,
+      });
+    }
+
+    // STEP 1: Create Order in MongoDB (without Razorpay ID yet)
+    const newOrder = await Order.create({
+      userId,
+      addressId,
+      items: orderItems,
+      totalAmount,
+      paymentMethod: "razorpay",
+      paymentStatus: "pending",
+    });
+
+    // STEP 2: Create Razorpay Order
+    const razorpayOrder = await razorpay.orders.create({
+      amount: totalAmount * 100, // in paise
+      currency: "INR",
+      receipt: `receipt_order_${newOrder._id}`,
+      payment_capture: 1,
+    });
+
+    // STEP 3: Update the order with razorpayOrderId
+    newOrder.razorpayOrderId = razorpayOrder.id;
+    await newOrder.save(); // this is more reliable than `findByIdAndUpdate`
+
+    return res.status(200).json({
+      success: true,
+      razorpayOrder,
+      mongoOrderId: newOrder._id,
+    });
+  } catch (err) {
+    console.error("Create Razorpay Order Failed:", err);
+    return res
+      .status(500)
+      .json({ message: "Server error creating Razorpay order" });
+  }
+});
+
+app.post("/razorpay/verify-payment", async (req, res) => {
+  const {
+    razorpay_order_id,
+    razorpay_payment_id,
+    razorpay_signature,
+    mongoOrderId,
+  } = req.body;
+
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+
+  const generated_signature = crypto
+    .createHmac("sha256", secret)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest("hex");
+
+  if (generated_signature === razorpay_signature) {
+    try {
+      const order = await Order.findByIdAndUpdate(
+        mongoOrderId,
+        {
+          paymentStatus: "paid",
+          razorpayPaymentId: razorpay_payment_id,
+          razorpayOrderId: razorpay_order_id, // Optional: Save if not saved earlier
+          razorpaySignature: razorpay_signature,
+        },
+        { new: true }
+      );
+
+      if (!order) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Order not found" });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Payment verified and status updated",
+        order,
+      });
+    } catch (err) {
+      console.error("Error updating payment status:", err);
+      return res.status(500).json({ success: false, message: "Server error" });
+    }
+  } else {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid signature" });
+  }
+});
 
 app.listen(port, (error) => {
   if (!error) {
