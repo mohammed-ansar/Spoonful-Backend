@@ -39,123 +39,44 @@ app.get("/", (req, res) => {
   res.send("Express App is Running");
 });
 
-//Image storage engine
-const storage = multer.diskStorage({
-  destination: "./upload/images",
-  filename: (req, file, cb) => {
-    return cb(
-      null,
-      `${file.fieldname}_${Date.now()}${path.extname(file.originalname)}`
-    );
+// cloudinary Configaration
+const { v2: cloudinary } = require('cloudinary');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+// const multer = require('multer');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'products', // Cloudinary folder name
+    allowed_formats: ['jpg', 'png', 'jpeg'],
   },
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
 //Creating Upload Endpoint for Images
 
-app.use("/images", express.static("upload/images"));
+// app.use("/images", express.static("upload/images"));
 
 app.post("/upload", upload.array("product", 4), (req, res) => {
-  const image_urls = req.files.map(
-    (file) => `${req.protocol}://${req.get("host")}/images/${file.filename}`
-  );
-  res.json({
-    success: 1,
-    image_urls: image_urls,
-  });
-});
-
-//Schema for Creating Products
-
-const Product = mongoose.model("Product", {
-  id: {
-    type: Number,
-    required: true,
-  },
-  name: {
-    type: String,
-    required: true,
-  },
-  image: {
-    type: [String],
-    required: true,
-  },
-  category: {
-    type: String,
-    required: true,
-  },
-  description: {
-    type: String,
-    required: true,
-  },
-  new_price: {
-    type: Number,
-    required: true,
-  },
-  old_price: {
-    type: Number,
-    required: true,
-  },
-  date: {
-    type: Date,
-    default: Date.now,
-  },
-  available: {
-    type: Boolean,
-    default: true,
-  },
-});
-
-//Creating API for Adding Product
-
-app.post("/addproduct", async (req, res) => {
-  let products = await Product.find({});
-  let id;
-  if (products.length > 0) {
-    let last_product_array = products.slice(-1);
-    let last_product = last_product_array[0];
-    id = last_product.id + 1;
-  } else {
-    id = 1;
+  try {
+    const image_urls = req.files.map(file => file.path);
+    res.json({
+      success: 1,
+      image_urls: image_urls,
+    });
+  } catch (err) {
+    console.error("Upload error:", err);
+    res.status(500).json({ success: 0, message: "Upload failed", error: err });
   }
-
-  const product = new Product({
-    id: id,
-    name: req.body.name,
-    image: req.body.image,
-    category: req.body.category,
-    description: req.body.description,
-    new_price: req.body.new_price,
-    old_price: req.body.old_price,
-  });
-  console.log(product);
-  await product.save();
-  console.log("Saved");
-  res.json({
-    success: true,
-    name: req.body.name,
-  });
 });
 
-//Creating API for Deleting Product
-
-app.post("/removeproduct", async (req, res) => {
-  await Product.findOneAndDelete({ id: req.body.id });
-  console.log("Removed");
-  res.json({
-    success: true,
-    name: req.body.name,
-  });
-});
-
-//Creating API for geting all Products
-
-app.get("/allproducts", async (req, res) => {
-  let products = await Product.find({});
-  console.log("All Products are Fetched");
-  res.send(products);
-});
 
 // Schema Creating for user model
 
@@ -295,6 +216,107 @@ app.get("/getuser", verifyToken, async (req, res) => {
     console.error("Error in /getuser:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
+});
+
+
+//schema for review
+const reviewSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "Users" },
+  rating: { type: Number, required: true },
+  comment: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
+//Schema for Creating Products
+
+const Product = mongoose.model("Product", {
+  id: {
+    type: Number,
+    required: true,
+  },
+  name: {
+    type: String,
+    required: true,
+  },
+  image: {
+    type: [String],
+    required: true,
+  },
+  category: {
+    type: String,
+    required: true,
+  },
+  description: {
+    type: String,
+    required: true,
+  },
+  new_price: {
+    type: Number,
+    required: true,
+  },
+  old_price: {
+    type: Number,
+    required: true,
+  },
+  date: {
+    type: Date,
+    default: Date.now,
+  },
+  available: {
+    type: Boolean,
+    default: true,
+  },
+  reviews: [reviewSchema],
+});
+
+//Creating API for Adding Product
+
+app.post("/addproduct", async (req, res) => {
+  let products = await Product.find({});
+  let id;
+  if (products.length > 0) {
+    let last_product_array = products.slice(-1);
+    let last_product = last_product_array[0];
+    id = last_product.id + 1;
+  } else {
+    id = 1;
+  }
+
+  const product = new Product({
+    id: id,
+    name: req.body.name,
+    image: req.body.image,
+    category: req.body.category,
+    description: req.body.description,
+    new_price: req.body.new_price,
+    old_price: req.body.old_price,
+  });
+  console.log(product);
+  await product.save();
+  console.log("Saved");
+  res.json({
+    success: true,
+    name: req.body.name,
+  });
+});
+
+//Creating API for Deleting Product
+
+app.post("/removeproduct", async (req, res) => {
+  await Product.findOneAndDelete({ id: req.body.id });
+  console.log("Removed");
+  res.json({
+    success: true,
+    name: req.body.name,
+  });
+});
+
+//Creating API for geting all Products
+
+app.get("/allproducts", async (req, res) => {
+  let products = await Product.find({});
+  console.log("All Products are Fetched");
+  res.send(products);
 });
 
 // schema for cart
@@ -810,6 +832,53 @@ app.post("/razorpay/verify-payment", async (req, res) => {
     return res
       .status(400)
       .json({ success: false, message: "Invalid signature" });
+  }
+});
+
+//creating api for review
+
+// POST /reviews/:productId
+app.post("/reviews/:productId", verifyToken, async (req, res) => {
+  const { rating, comment } = req.body;
+  const userId = req.user.id; // from JWT middleware
+  const { productId } = req.params;
+
+  try {
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const alreadyReviewed = product.reviews.find(
+  (r) => r.userId && r.userId.toString() === userId
+);
+
+
+    if (alreadyReviewed) {
+      return res
+        .status(400)
+        .json({ message: "You already reviewed this product" });
+    }
+
+    product.reviews.push({ userId, rating, comment });
+    await product.save();
+    res.status(201).json({ message: "Review added" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get("/product/:id", async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id).populate(
+      "reviews.userId",
+      "name"
+    );
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    res.json(product);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
