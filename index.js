@@ -15,6 +15,7 @@ const rateLimit = require("express-rate-limit");
 // const { type } = require("os");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
 app.use(helmet());
 
@@ -61,7 +62,7 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage });
 
 //Creating Upload Endpoint for Images
-
+ 
 // app.use("/images", express.static("upload/images"));
 
 app.post("/upload", upload.array("product", 4), (req, res) => {
@@ -881,6 +882,54 @@ app.get("/product/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+//Contact Schema
+const contactSchema = new mongoose.Schema({
+  name: String,
+  email: String,
+  message: String,
+}, { timestamps: true });
+
+const Contact = mongoose.model("Contact", contactSchema);
+
+// Api for contact option via mail
+app.post("/contact", async (req, res) => {
+  const { name, email, message } = req.body;
+
+  try {
+    // Store in DB
+    await Contact.create({ name, email, message });
+
+    // Send email
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.SMTP_USER, // your Gmail or domain email
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"Spoonful Contact" <${process.env.SMTP_USER}>`,
+      to: process.env.CONTACT_EMAIL,
+      subject: "New Contact Message",
+      text: `From: ${name} (${email})\n\n${message}`,
+    });
+
+    res.status(200).json({ success: true, message: "Message sent successfully." });
+  } catch (error) {
+    console.error("Error sending message:", error);
+    res.status(500).json({ success: false, message: "Something went wrong." });
+  }
+});
+
+//api for messages displaing in Admin page
+app.get("/contacts", async (req, res) => {
+  // Optional: Check if admin
+  const messages = await Contact.find().sort({ createdAt: -1 });
+  res.json(messages);
+});
+
 
 app.listen(port, (error) => {
   if (!error) {
