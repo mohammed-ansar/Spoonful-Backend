@@ -41,8 +41,8 @@ app.get("/", (req, res) => {
 });
 
 // cloudinary Configaration
-const { v2: cloudinary } = require('cloudinary');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { v2: cloudinary } = require("cloudinary");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 // const multer = require('multer');
 
 cloudinary.config({
@@ -54,20 +54,20 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'products', // Cloudinary folder name
-    allowed_formats: ['jpg', 'png', 'jpeg'],
+    folder: "products", // Cloudinary folder name
+    allowed_formats: ["jpg", "png", "jpeg"],
   },
 });
 
 const upload = multer({ storage });
 
 //Creating Upload Endpoint for Images
- 
+
 // app.use("/images", express.static("upload/images"));
 
 app.post("/upload", upload.array("product", 4), (req, res) => {
   try {
-    const image_urls = req.files.map(file => file.path);
+    const image_urls = req.files.map((file) => file.path);
     res.json({
       success: 1,
       image_urls: image_urls,
@@ -77,7 +77,6 @@ app.post("/upload", upload.array("product", 4), (req, res) => {
     res.status(500).json({ success: 0, message: "Upload failed", error: err });
   }
 });
-
 
 // Schema Creating for user model
 
@@ -104,6 +103,8 @@ const Users = mongoose.model("Users", {
     enum: ["user", "admin"],
     default: "user",
   },
+  claimedCoupons: [{ type: mongoose.Schema.Types.ObjectId, ref: "Coupon" }],
+  spoonPoints: { type: Number, default: 0 },
 });
 
 // Creating Endpoint for user registration
@@ -218,7 +219,6 @@ app.get("/getuser", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
-
 
 //schema for review
 const reviewSchema = new mongoose.Schema({
@@ -544,6 +544,7 @@ const orderSchema = new mongoose.Schema({
       priceAtPurchase: { type: Number, required: true },
     },
   ],
+  codFee: { type: Number, default: 0 },
   totalAmount: { type: Number, required: true },
   paymentMethod: {
     type: String,
@@ -560,6 +561,15 @@ const orderSchema = new mongoose.Schema({
     enum: ["placed", "shipped", "delivered", "cancelled"],
     default: "placed",
   },
+  coupon: {
+    code: { type: String },
+    rewardType: {
+      type: String,
+      enum: ["discount", "points", "sample", "recipe", "cashback"],
+    },
+    rewardValue: { type: mongoose.Schema.Types.Mixed }, // allow string or number
+  },
+
   razorpayOrderId: { type: String },
   razorpayPaymentId: { type: String },
   razorpaySignature: { type: String },
@@ -571,16 +581,32 @@ const Order = mongoose.model("Order", orderSchema);
 // POST /order/create
 app.post("/order/create", verifyToken, async (req, res) => {
   try {
-    const { addressId, items, paymentMethod, paymentStatus, razorpayOrderId } =
-      req.body;
+    const {
+      addressId,
+      items,
+      paymentMethod,
+      paymentStatus,
+      razorpayOrderId,
+      couponCode,
+      rewardType,
+      rewardValue,
+      codFee,
+      totalAmount, // ✅ frontend calculated total
+    } = req.body;
 
     const userId = req.user.id;
 
-    if (!userId || !addressId || !items || items.length === 0) {
+    if (
+      !userId ||
+      !addressId ||
+      !items ||
+      items.length === 0 ||
+      totalAmount == null
+    ) {
       return res.status(400).json({ message: "Missing required order data" });
     }
 
-    // ✅ If it's Razorpay, prevent duplicate
+    // Prevent duplicate Razorpay orders
     if (paymentMethod === "razorpay" && razorpayOrderId) {
       const existing = await Order.findOne({ razorpayOrderId });
       if (existing) {
@@ -588,16 +614,14 @@ app.post("/order/create", verifyToken, async (req, res) => {
       }
     }
 
-    let totalAmount = 0;
+    // Validate items and capture priceAtPurchase
     const orderItems = [];
 
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product)
+      if (!product) {
         return res.status(404).json({ message: "Product not found" });
-
-      const itemTotal = product.new_price * item.quantity;
-      totalAmount += itemTotal;
+      }
 
       orderItems.push({
         productId: product._id,
@@ -610,11 +634,27 @@ app.post("/order/create", verifyToken, async (req, res) => {
       userId,
       addressId,
       items: orderItems,
-      totalAmount,
+      totalAmount, // ✅ use trusted frontend amount
+      codFee: codFee || 0, // ✅ store separately
       paymentMethod,
       paymentStatus: paymentStatus || "pending",
       razorpayOrderId,
+      coupon: couponCode
+        ? {
+            code: couponCode,
+            rewardType,
+            rewardValue,
+          }
+        : undefined,
     });
+
+    // Mark coupon as used
+    if (couponCode) {
+      await ClaimedCoupon.findOneAndUpdate(
+        { code: couponCode, userId },
+        { $set: { status: "Used" } }
+      );
+    }
 
     return res.status(201).json({ success: true, order: newOrder });
   } catch (err) {
@@ -656,6 +696,13 @@ app.get("/order/myorders", verifyToken, async (req, res) => {
       status: order.orderStatus,
       paymentMethod: order.paymentMethod,
       paymentStatus: order.paymentStatus,
+      coupon: order.coupon
+        ? {
+            code: order.coupon.code,
+            rewardType: order.coupon.rewardType,
+            rewardValue: order.coupon.rewardValue,
+          }
+        : null,
     }));
 
     res.json({ success: true, orders: formattedOrders });
@@ -726,7 +773,8 @@ const razorpay = new Razorpay({
 
 app.post("/razorpay/create-order", verifyToken, async (req, res) => {
   try {
-    const { addressId, items } = req.body;
+    const { addressId, items, couponCode, rewardType, rewardValue } = req.body;
+
     const userId = req.user.id;
 
     if (!userId || !addressId || !items || items.length === 0) {
@@ -751,7 +799,12 @@ app.post("/razorpay/create-order", verifyToken, async (req, res) => {
       });
     }
 
-    // STEP 1: Create Order in MongoDB (without Razorpay ID yet)
+    // ✅ Apply discount if applicable
+    if (couponCode && rewardType === "discount" && rewardValue > 0) {
+      totalAmount = Math.floor(totalAmount - rewardValue);
+    }
+
+    // STEP 1: Create Order in MongoDB (with coupon details if any)
     const newOrder = await Order.create({
       userId,
       addressId,
@@ -759,6 +812,13 @@ app.post("/razorpay/create-order", verifyToken, async (req, res) => {
       totalAmount,
       paymentMethod: "razorpay",
       paymentStatus: "pending",
+      coupon: couponCode
+        ? {
+            code: couponCode,
+            rewardType,
+            rewardValue,
+          }
+        : undefined,
     });
 
     // STEP 2: Create Razorpay Order
@@ -771,7 +831,7 @@ app.post("/razorpay/create-order", verifyToken, async (req, res) => {
 
     // STEP 3: Update the order with razorpayOrderId
     newOrder.razorpayOrderId = razorpayOrder.id;
-    await newOrder.save(); // this is more reliable than `findByIdAndUpdate`
+    await newOrder.save();
 
     return res.status(200).json({
       success: true,
@@ -819,6 +879,16 @@ app.post("/razorpay/verify-payment", async (req, res) => {
           .status(404)
           .json({ success: false, message: "Order not found" });
       }
+      // After payment verified and order updated
+      const couponCode =
+        order?.coupon?.code || req.body.couponCode || req.body.code || null;
+
+      if (couponCode) {
+        await ClaimedCoupon.findOneAndUpdate(
+          { code: couponCode, userId },
+          { $set: { status: "Used" } }
+        );
+      }
 
       return res.status(200).json({
         success: true,
@@ -849,9 +919,8 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
     if (!product) return res.status(404).json({ message: "Product not found" });
 
     const alreadyReviewed = product.reviews.find(
-  (r) => r.userId && r.userId.toString() === userId
-);
-
+      (r) => r.userId && r.userId.toString() === userId
+    );
 
     if (alreadyReviewed) {
       return res
@@ -884,11 +953,14 @@ app.get("/product/:id", async (req, res) => {
 });
 
 //Contact Schema
-const contactSchema = new mongoose.Schema({
-  name: String,
-  email: String,
-  message: String,
-}, { timestamps: true });
+const contactSchema = new mongoose.Schema(
+  {
+    name: String,
+    email: String,
+    message: String,
+  },
+  { timestamps: true }
+);
 
 const Contact = mongoose.model("Contact", contactSchema);
 
@@ -916,7 +988,9 @@ app.post("/contact", async (req, res) => {
       text: `From: ${name} (${email})\n\n${message}`,
     });
 
-    res.status(200).json({ success: true, message: "Message sent successfully." });
+    res
+      .status(200)
+      .json({ success: true, message: "Message sent successfully." });
   } catch (error) {
     console.error("Error sending message:", error);
     res.status(500).json({ success: false, message: "Something went wrong." });
@@ -930,6 +1004,337 @@ app.get("/contacts", async (req, res) => {
   res.json(messages);
 });
 
+// Schema for coupon
+const couponSchema = new mongoose.Schema({
+  code: { type: String, unique: true },
+  rewardType: {
+    type: String,
+    enum: ["discount", "points", "sample", "recipe"],
+    required: true,
+  },
+  rewardValue: { type: mongoose.Schema.Types.Mixed }, // 10, 20, or sample ID
+  claimed: { type: Boolean, default: false },
+  claimedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Users",
+    default: null,
+  },
+  used: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Coupon = mongoose.model("Coupon", couponSchema);
+
+// API route for claiming a coupon
+app.post("/coupon/claim", async (req, res) => {
+  const { code, userId } = req.body;
+
+  if (!code || !userId) {
+    return res
+      .status(400)
+      .json({ success: false, msg: "Code and User ID are required." });
+  }
+
+  try {
+    const coupon = await Coupon.findOne({ code });
+
+    if (!coupon) {
+      return res.status(404).json({ success: false, msg: "Coupon not found." });
+    }
+
+    if (coupon.claimed) {
+      return res
+        .status(400)
+        .json({ success: false, msg: "Coupon already claimed." });
+    }
+
+    // Mark coupon as claimed
+    coupon.claimed = true;
+    coupon.claimedBy = userId;
+    await coupon.save();
+
+    // Add to ClaimedCoupon collection
+    const claimed = new ClaimedCoupon({
+      userId,
+      code: coupon.code,
+      rewardValue: coupon.rewardValue, // match with frontend
+      rewardType: coupon.rewardType,
+      status: "Not Used",
+    });
+    await claimed.save();
+
+    // Add this inside your try block, after coupon is claimed and saved
+    if (coupon.rewardType === "points") {
+      await ClaimedCoupon.updateOne({ code, userId }, { status: "Used" });
+
+      const user = await Users.findById(userId);
+      if (user) {
+        user.spoonPoints =
+          (user.spoonPoints || 0) + parseInt(coupon.rewardValue);
+        await user.save();
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      msg: "Coupon claimed successfully.",
+      rewardType: coupon.rewardType,
+    });
+  } catch (err) {
+    console.error("Error claiming coupon:", err);
+    return res
+      .status(500)
+      .json({ success: false, msg: "Something went wrong." });
+  }
+});
+
+// Coupon Insert API
+app.post("/insert-coupons", async (req, res) => {
+  try {
+    const coupons = req.body;
+
+    if (!Array.isArray(coupons)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid data format (expecting array)" });
+    }
+
+    await Coupon.insertMany(coupons, { ordered: false });
+
+    return res.status(200).json({ message: "Coupons inserted successfully" });
+  } catch (error) {
+    console.error("Insert error:", error);
+    return res.status(500).json({ error: "Failed to insert coupons" });
+  }
+});
+
+//Schema for claimed coupons
+const claimedCouponSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  code: { type: String, required: true },
+  rewardValue: { type: String, required: true },
+  rewardType: {
+    type: String,
+    enum: ["discount", "points", "sample", "recipe", "cashback"],
+    required: true,
+  },
+  status: { type: String, default: "Not Used" }, // or "Used"
+});
+
+const ClaimedCoupon = mongoose.model("ClaimedCoupon", claimedCouponSchema);
+
+// GET /coupon/claimed/:userId
+app.get("/coupon/claimed/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const claimedCoupons = await ClaimedCoupon.find({ userId }).sort({
+      _id: -1,
+    });
+
+    res.status(200).json({
+      success: true,
+      claimedCoupons,
+    });
+  } catch (error) {
+    console.error("Error fetching claimed coupons:", error);
+    res.status(500).json({ success: false, msg: "Server error" });
+  }
+});
+
+// Redeem SpoonPoints as Discount Coupon
+app.post("/redeem-discount", verifyToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const user = await Users.findById(userId);
+    if (!user || user.spoonPoints < 100) {
+      return res
+        .status(400)
+        .json({ success: false, msg: "Not enough points." });
+    }
+
+    const pointsToUse = 100;
+    const discountAmount = 10;
+    const couponCode = `SPD-${Date.now().toString().slice(-5)}`;
+
+    // Create a new Coupon
+    const newCoupon = new Coupon({
+      code: couponCode,
+      rewardValue: discountAmount,
+      rewardType: "discount",
+      claimed: false,
+      claimedBy: userId,
+      used: false,
+    });
+
+    await newCoupon.save();
+
+    // Deduct points
+    user.spoonPoints -= pointsToUse;
+    await user.save();
+
+    return res.json({ success: true, msg: "Coupon created", code: couponCode });
+  } catch (error) {
+    console.error("Discount redeem error:", error);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+});
+
+// Schema for cashback
+const cashbackSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Users",
+    required: true,
+  },
+  upiId: { type: String, required: true },
+  amount: { type: Number, required: true },
+  status: {
+    type: String,
+    enum: ["Pending", "Approved", "Rejected"],
+    default: "Pending",
+  },
+  requestedAt: { type: Date, default: Date.now },
+});
+
+const CashbackRequest = mongoose.model("CashbackRequest", cashbackSchema);
+
+// Redeem SpoonPoints as Cashback
+app.post("/redeem-cashback", verifyToken, async (req, res) => {
+  const userId = req.user.id;
+  const { upiId } = req.body;
+
+  if (!upiId) {
+    return res.status(400).json({ success: false, msg: "UPI ID required" });
+  }
+
+  try {
+    const user = await Users.findById(userId);
+    if (!user || user.spoonPoints < 100) {
+      return res
+        .status(400)
+        .json({ success: false, msg: "Not enough points." });
+    }
+
+    const pointsToUse = 100;
+    const cashbackAmount = 10;
+
+    const cashback = new CashbackRequest({
+      userId,
+      upiId,
+      amount: cashbackAmount,
+      status: "Pending",
+    });
+    await cashback.save();
+
+    // Deduct points
+    user.spoonPoints -= pointsToUse;
+    await user.save();
+
+    return res.json({ success: true, msg: "Cashback request received" });
+  } catch (error) {
+    console.error("Cashback redeem error:", error);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+});
+
+// Backend: GET /user/spoonpoints
+app.get("/user/spoonpoints", verifyToken, async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.id);
+    if (!user)
+      return res.status(404).json({ success: false, msg: "User not found" });
+
+    res.json({ success: true, spoonPoints: user.spoonPoints });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, msg: "Server error" });
+  }
+});
+
+// POST /coupon/verify
+app.post("/coupon/verify", verifyToken, async (req, res) => {
+  const { code } = req.body;
+  const userId = req.user.id;
+
+  try {
+    const claimedCoupon = await ClaimedCoupon.findOne({
+      code: code.trim(),
+      userId,
+      status: "Not Used", // ✅ Correct field
+    });
+
+    if (!claimedCoupon) {
+      return res.status(404).json({
+        success: false,
+        message: "Coupon not found or already used.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      coupon: claimedCoupon,
+    });
+  } catch (error) {
+    console.error("Error verifying coupon:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// app.post("/admin/fix-spoonpoints", async (req, res) => {
+//   try {
+//     const users = await Users.find({});
+
+//     for (const user of users) {
+//       const claimed = await ClaimedCoupon.find({
+//         userId: user._id,
+//         rewardType: "points",
+//       });
+
+//       const totalPoints = claimed.reduce((acc, c) => {
+//         const val = parseInt(c.rewardValue);
+//         return acc + (isNaN(val) ? 0 : val);
+//       }, 0);
+
+//       user.spoonPoints = totalPoints;
+//       await user.save();
+//     }
+
+//     return res.json({ success: true, msg: "SpoonPoints fixed for all users" });
+//   } catch (err) {
+//     console.error(err);
+//     return res.status(500).json({ success: false, msg: "Server error" });
+//   }
+// });
+
+// WARNING: Remove after running once or secure it properly (e.g. admin check)
+// app.get("/admin/backfill-reward-types", async (req, res) => {
+//   try {
+//     const claimed = await ClaimedCoupon.find({ rewardType: { $exists: false } });
+
+//     let updatedCount = 0;
+
+//     for (const c of claimed) {
+//       const original = await Coupon.findOne({ code: c.code });
+//       if (original) {
+//         c.rewardType = original.rewardType;
+//         await c.save();
+//         updatedCount++;
+//       }
+//     }
+
+//     res.status(200).json({
+//       success: true,
+//       message: `Updated ${updatedCount} claimed coupons.`,
+//     });
+//   } catch (error) {
+//     console.error("Backfill error:", error);
+//     res.status(500).json({ success: false, message: "Server error" });
+//   }
+// });
 
 app.listen(port, (error) => {
   if (!error) {
