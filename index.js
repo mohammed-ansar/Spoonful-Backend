@@ -883,6 +883,8 @@ app.post("/razorpay/verify-payment", async (req, res) => {
       const couponCode =
         order?.coupon?.code || req.body.couponCode || req.body.code || null;
 
+      const userId = order.userId;
+
       if (couponCode) {
         await ClaimedCoupon.findOneAndUpdate(
           { code: couponCode, userId },
