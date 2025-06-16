@@ -187,17 +187,6 @@ app.post("/login", async (req, res) => {
   } else {
     res.json({ success: false, errors: "Wrong Email Id" });
   }
-  // i<f (data.success) {
-  //   const decoded = jwt.verify(token, process.env.JWT_SECRET); // <-- GET user.id here
-  //   const userId = decoded.user.id;
-  //   setUserData({ _id: userId }); // <-- Properly store user ID
-  //   localStorage.setItem("token", data.token); // optionally persist
-  // }>
-  //   if (passCompare) {
-  //   const data = { user: { id: user.id } };
-  //   const token = jwt.sign(data, process.env.JWT_SECRET);
-  //   res.json({ success: true, token });
-  // }
 });
 
 // Get login user details
@@ -219,6 +208,55 @@ app.get("/getuser", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
+
+// Endpoint to change user name and email
+app.put("/update-profile", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { name, email } = req.body;
+
+    // Check if new email already exists for someone else
+    const existing = await Users.findOne({ email });
+    if (existing && existing._id.toString() !== userId) {
+      return res.status(400).json({ success: false, message: "Email already in use" });
+    }
+
+    const updatedUser = await Users.findByIdAndUpdate(
+      userId,
+      { name, email },
+      { new: true }
+    ).select("-password");
+
+    res.json({ success: true, user: updatedUser });
+  } catch (error) {
+    console.error("Error updating profile:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Endpoint to change password
+app.put("/change-password", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currentPassword, newPassword } = req.body;
+
+    const user = await Users.findById(userId);
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: "Current password is incorrect" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    res.json({ success: true, message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Error changing password:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 
 //schema for review
 const reviewSchema = new mongoose.Schema({
