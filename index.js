@@ -951,7 +951,7 @@ app.post("/razorpay/verify-payment", async (req, res) => {
 // POST /reviews/:productId
 app.post("/reviews/:productId", verifyToken, async (req, res) => {
   const { rating, comment } = req.body;
-  const userId = req.user.id; // from JWT middleware
+  const userId = req.user.id;
   const { productId } = req.params;
 
   try {
@@ -963,19 +963,22 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
     );
 
     if (alreadyReviewed) {
-      return res
-        .status(400)
-        .json({ message: "You already reviewed this product" });
+      return res.status(400).json({ message: "You already reviewed this product" });
     }
 
     product.reviews.push({ userId, rating, comment });
     await product.save();
-    res.status(201).json({ message: "Review added" });
+
+    // ✅ Re-fetch product with populated reviews
+    const updatedProduct = await Product.findById(productId).populate("reviews.userId", "name");
+
+    res.status(201).json(updatedProduct);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 app.get("/product/:id", async (req, res) => {
   try {
@@ -991,6 +994,66 @@ app.get("/product/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// PATCH /reviews/:productId
+app.patch("/reviews/:productId", verifyToken, async (req, res) => {
+  const { rating, comment } = req.body;
+  const { productId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const product = await Product.findById(productId);
+    const review = product.reviews.find(
+      (r) => r.userId.toString() === userId
+    );
+
+    if (!review) return res.status(404).json({ message: "Review not found" });
+
+    review.rating = rating;
+    review.comment = comment;
+
+    await product.save();
+    res.json({ message: "Review updated" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+/// DELETE /reviews/:productId/:reviewId
+app.delete("/reviews/:productId/:reviewId", verifyToken, async (req, res) => {
+  const { productId, reviewId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    const review = product.reviews.find(
+      (r) => r._id.toString() === reviewId
+    );
+
+    // console.log("Found review:", review);
+
+    if (!review) return res.status(404).json({ message: "Review not found" });
+    if (review.userId.toString() !== userId)
+      return res.status(403).json({ message: "Unauthorized" });
+
+    // Remove review by filtering
+    product.reviews = product.reviews.filter(
+      (r) => r._id.toString() !== reviewId
+    );
+
+    await product.save();
+
+    res.json({ message: "Review deleted" });
+  } catch (err) {
+    console.error("Error deleting review:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 
 //Contact Schema
 const contactSchema = new mongoose.Schema(
