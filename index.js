@@ -563,6 +563,50 @@ app.delete("/address/delete/:id", verifyToken, async (req, res) => {
   }
 });
 
+// PUT /address/update/:id
+app.put("/address/update/:id", verifyToken, async (req, res) => {
+  try {
+    const updatedAddress = await Address.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      req.body,
+      { new: true }
+    );
+
+    if (!updatedAddress) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Address not found" });
+    }
+
+    res.json({ success: true, message: "Address updated", address: updatedAddress });
+  } catch (error) {
+    console.error("Update error:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+// GET /address/get/:id
+app.get("/address/get/:id", verifyToken, async (req, res) => {
+  try {
+    const address = await Address.findOne({
+      _id: req.params.id,
+      userId: req.user.id,
+    });
+
+    if (!address) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Address not found" });
+    }
+
+    res.json({ success: true, address });
+  } catch (error) {
+    console.error("Get single address error:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+
 //schema for order
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
