@@ -353,10 +353,30 @@ app.post("/removeproduct", async (req, res) => {
 //Creating API for geting all Products
 
 app.get("/allproducts", async (req, res) => {
-  let products = await Product.find({});
-  console.log("All Products are Fetched");
-  res.send(products);
+  try {
+    const products = await Product.find({});
+
+    const productsWithRating = products.map((product) => {
+      const avgRating =
+        product.reviews.length > 0
+          ? product.reviews.reduce((sum, r) => sum + r.rating, 0) / product.reviews.length
+          : 0;
+      console.log(avgRating)
+
+      return {
+        ...product.toObject(),
+        averageRating: avgRating,
+      };
+    });
+
+    console.log("All Products with Ratings are Fetched");
+    res.json(productsWithRating);
+  } catch (err) {
+    console.error("Error fetching products:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
+
 
 // schema for cart
 
@@ -1030,14 +1050,24 @@ app.get("/product/:id", async (req, res) => {
       "reviews.userId",
       "name"
     );
+
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    res.json(product);
+    const averageRating =
+      product.reviews.length > 0
+        ? product.reviews.reduce((acc, r) => acc + r.rating, 0) / product.reviews.length
+        : 0;
+
+    res.json({
+      ...product.toObject(),
+      averageRating,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // PATCH /reviews/:productId
 app.patch("/reviews/:productId", verifyToken, async (req, res) => {
