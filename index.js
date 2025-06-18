@@ -218,7 +218,9 @@ app.put("/update-profile", verifyToken, async (req, res) => {
     // Check if new email already exists for someone else
     const existing = await Users.findOne({ email });
     if (existing && existing._id.toString() !== userId) {
-      return res.status(400).json({ success: false, message: "Email already in use" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email already in use" });
     }
 
     const updatedUser = await Users.findByIdAndUpdate(
@@ -243,7 +245,9 @@ app.put("/change-password", verifyToken, async (req, res) => {
     const user = await Users.findById(userId);
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
-      return res.status(400).json({ success: false, message: "Current password is incorrect" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Current password is incorrect" });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -256,7 +260,6 @@ app.put("/change-password", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
-
 
 //schema for review
 const reviewSchema = new mongoose.Schema({
@@ -282,6 +285,10 @@ const Product = mongoose.model("Product", {
     required: true,
   },
   category: {
+    type: String,
+    required: true,
+  },
+  quantity: {
     type: String,
     required: true,
   },
@@ -326,6 +333,7 @@ app.post("/addproduct", async (req, res) => {
     name: req.body.name,
     image: req.body.image,
     category: req.body.category,
+    quantity: req.body.quantity,
     description: req.body.description,
     new_price: req.body.new_price,
     old_price: req.body.old_price,
@@ -359,9 +367,10 @@ app.get("/allproducts", async (req, res) => {
     const productsWithRating = products.map((product) => {
       const avgRating =
         product.reviews.length > 0
-          ? product.reviews.reduce((sum, r) => sum + r.rating, 0) / product.reviews.length
+          ? product.reviews.reduce((sum, r) => sum + r.rating, 0) /
+            product.reviews.length
           : 0;
-      console.log(avgRating)
+      console.log(avgRating);
 
       return {
         ...product.toObject(),
@@ -377,6 +386,37 @@ app.get("/allproducts", async (req, res) => {
   }
 });
 
+// API: /updateproduct
+app.post("/updateproduct", async (req, res) => {
+  const { id, name, description, image, category, new_price, old_price } =
+    req.body;
+
+  try {
+    const updatedProduct = await Product.findOneAndUpdate(
+      { id: id },
+      {
+        name,
+        description,
+        image,
+        category,
+        new_price,
+        old_price,
+      },
+      { new: true }
+    );
+
+    if (!updatedProduct) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Product not found" });
+    }
+
+    res.json({ success: true, product: updatedProduct });
+  } catch (err) {
+    console.error("Update failed:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 // schema for cart
 
@@ -598,7 +638,11 @@ app.put("/address/update/:id", verifyToken, async (req, res) => {
         .json({ success: false, message: "Address not found" });
     }
 
-    res.json({ success: true, message: "Address updated", address: updatedAddress });
+    res.json({
+      success: true,
+      message: "Address updated",
+      address: updatedAddress,
+    });
   } catch (error) {
     console.error("Update error:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -625,7 +669,6 @@ app.get("/address/get/:id", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
-
 
 //schema for order
 const orderSchema = new mongoose.Schema({
@@ -780,10 +823,14 @@ app.get("/order/myorders", verifyToken, async (req, res) => {
     // Format the data to match frontend expected shape (optional)
     const formattedOrders = orders.map((order) => ({
       items: order.items.map((item) => ({
-        product: {
-          name: item.productId.name,
-          // add other product fields if needed
-        },
+        product: item.productId
+          ? {
+              name: item.productId.name,
+              // Add other fields as needed
+            }
+          : {
+              name: "Product Deleted",
+            },
         quantity: item.quantity,
       })),
       address: {
@@ -1027,14 +1074,19 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
     );
 
     if (alreadyReviewed) {
-      return res.status(400).json({ message: "You already reviewed this product" });
+      return res
+        .status(400)
+        .json({ message: "You already reviewed this product" });
     }
 
     product.reviews.push({ userId, rating, comment });
     await product.save();
 
     // ✅ Re-fetch product with populated reviews
-    const updatedProduct = await Product.findById(productId).populate("reviews.userId", "name");
+    const updatedProduct = await Product.findById(productId).populate(
+      "reviews.userId",
+      "name"
+    );
 
     res.status(201).json(updatedProduct);
   } catch (err) {
@@ -1042,7 +1094,6 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
 
 app.get("/product/:id", async (req, res) => {
   try {
@@ -1055,7 +1106,8 @@ app.get("/product/:id", async (req, res) => {
 
     const averageRating =
       product.reviews.length > 0
-        ? product.reviews.reduce((acc, r) => acc + r.rating, 0) / product.reviews.length
+        ? product.reviews.reduce((acc, r) => acc + r.rating, 0) /
+          product.reviews.length
         : 0;
 
     res.json({
@@ -1068,7 +1120,6 @@ app.get("/product/:id", async (req, res) => {
   }
 });
 
-
 // PATCH /reviews/:productId
 app.patch("/reviews/:productId", verifyToken, async (req, res) => {
   const { rating, comment } = req.body;
@@ -1077,9 +1128,7 @@ app.patch("/reviews/:productId", verifyToken, async (req, res) => {
 
   try {
     const product = await Product.findById(productId);
-    const review = product.reviews.find(
-      (r) => r.userId.toString() === userId
-    );
+    const review = product.reviews.find((r) => r.userId.toString() === userId);
 
     if (!review) return res.status(404).json({ message: "Review not found" });
 
@@ -1093,7 +1142,6 @@ app.patch("/reviews/:productId", verifyToken, async (req, res) => {
   }
 });
 
-
 /// DELETE /reviews/:productId/:reviewId
 app.delete("/reviews/:productId/:reviewId", verifyToken, async (req, res) => {
   const { productId, reviewId } = req.params;
@@ -1103,9 +1151,7 @@ app.delete("/reviews/:productId/:reviewId", verifyToken, async (req, res) => {
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const review = product.reviews.find(
-      (r) => r._id.toString() === reviewId
-    );
+    const review = product.reviews.find((r) => r._id.toString() === reviewId);
 
     // console.log("Found review:", review);
 
@@ -1126,8 +1172,6 @@ app.delete("/reviews/:productId/:reviewId", verifyToken, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
-
 
 //Contact Schema
 const contactSchema = new mongoose.Schema(
