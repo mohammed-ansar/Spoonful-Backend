@@ -872,6 +872,47 @@ const Orders = mongoose.model("Orders", {
   date: Date,
 });
 
+// app.get("/admin/orders", verifyToken, async (req, res) => {
+//   try {
+//     const userId = req.user.id;
+//     const user = await Users.findById(userId);
+
+//     if (!user || user.role !== "admin") {
+//       return res.status(403).json({ success: false, message: "Access denied" });
+//     }
+
+//     const orders = await Order.find({})
+//       .populate("items.productId")
+//       .populate("addressId")
+//       .sort({ createdAt: -1 });
+
+//     const formattedOrders = orders.map((order) => ({
+//       items: order.items.map((item) => ({
+//         product: {
+//           name: item.productId.name,
+//         },
+//         quantity: item.quantity,
+//       })),
+//       address: {
+//         fullName: order.addressId.fullName,
+//         area: order.addressId.area,
+//         city: order.addressId.city,
+//         state: order.addressId.state,
+//         phoneNumber: order.addressId.phoneNumber,
+//       },
+//       amount: order.totalAmount,
+//       date: order.createdAt,
+//       status: order.orderStatus,
+//       paymentMethod: order.paymentMethod,
+//       paymentStatus: order.paymentStatus,
+//     }));
+
+//     res.json({ success: true, orders: formattedOrders });
+//   } catch (error) {
+//     console.error("Error fetching all orders:", error);
+//     res.status(500).json({ success: false, message: "Internal server error" });
+//   }
+// });
 app.get("/admin/orders", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -889,16 +930,16 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
     const formattedOrders = orders.map((order) => ({
       items: order.items.map((item) => ({
         product: {
-          name: item.productId.name,
+          name: item.productId?.name || "Unknown Product",
         },
         quantity: item.quantity,
       })),
       address: {
-        fullName: order.addressId.fullName,
-        area: order.addressId.area,
-        city: order.addressId.city,
-        state: order.addressId.state,
-        phoneNumber: order.addressId.phoneNumber,
+        fullName: order.addressId?.fullName || "N/A",
+        area: order.addressId?.area || "N/A",
+        city: order.addressId?.city || "N/A",
+        state: order.addressId?.state || "N/A",
+        phoneNumber: order.addressId?.phoneNumber || "N/A",
       },
       amount: order.totalAmount,
       date: order.createdAt,
@@ -913,6 +954,7 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
+
 
 //api for razorpay
 const razorpay = new Razorpay({
