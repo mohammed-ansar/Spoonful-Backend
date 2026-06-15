@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "migrate:product-slugs": "node scripts/migrate-product-slugs.js"
   },
   "author": "",
   "license": "ISC",

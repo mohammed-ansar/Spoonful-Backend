@@ -16,6 +16,7 @@ const rateLimit = require("express-rate-limit");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+const { createSlugBase } = require("./utils/slug");
 
 app.use(helmet());
 
@@ -295,6 +296,12 @@ const reviewSchema = new mongoose.Schema({
 });
 
 //Schema for Creating Products
+const productVariantSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  image: { type: String, default: "" },
+  stock: { type: Number },
+});
 
 const Product = mongoose.model("Product", {
   id: {
@@ -304,6 +311,12 @@ const Product = mongoose.model("Product", {
   name: {
     type: String,
     required: true,
+  },
+  slug: {
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true,
   },
   image: {
     type: [String],
@@ -337,6 +350,15 @@ const Product = mongoose.model("Product", {
     type: Boolean,
     default: true,
   },
+  variants: { type: [productVariantSchema], default: [] },
+  featured: { type: Boolean, default: false },
+  isOffer: { type: Boolean, default: false },
+  offerText: { type: String, default: "" },
+  offerBadge: { type: String, default: "" },
+  displayOrder: { type: Number, default: 0 },
+  isVisible: { type: Boolean, default: true },
+  productLabel: { type: String, default: "" },
+  stockQuantity: { type: Number },
   suitableAge: { type: String, default: "" },
   benefits: { type: [String], default: [] },
   ingredients: { type: [String], default: [] },
@@ -355,6 +377,86 @@ const Product = mongoose.model("Product", {
   reviews: [reviewSchema],
 });
 
+const truthyQuery = (value) => value === true || value === "true" || value === "1";
+const hasFiniteNumber = (value) => Number.isFinite(Number(value));
+const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+const normalizeVariants = (variants = []) =>
+  Array.isArray(variants)
+    ? variants
+        .map((variant) => ({
+          name: String(variant.name || "").trim(),
+          price: Number(variant.price),
+          image: String(variant.image || "").trim(),
+          stock:
+            variant.stock === "" || typeof variant.stock === "undefined"
+              ? undefined
+              : Number(variant.stock),
+        }))
+        .filter((variant) => variant.name && Number.isFinite(variant.price))
+    : [];
+
+const getProductStock = (product, variant) => {
+  if (variant && hasFiniteNumber(variant.stock)) return Number(variant.stock);
+  if (hasFiniteNumber(product.stockQuantity)) return Number(product.stockQuantity);
+  return null;
+};
+
+const ensurePurchasable = (product, variant, quantity) => {
+  if (!product.available || product.isVisible === false) {
+    const error = new Error("Product is unavailable");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const stock = getProductStock(product, variant);
+  if (stock !== null && stock < quantity) {
+    const error = new Error(stock <= 0 ? "Product is out of stock" : "Insufficient stock");
+    error.statusCode = 400;
+    throw error;
+  }
+};
+
+const generateUniqueProductSlug = async (value, excludeMongoId) => {
+  const baseSlug = createSlugBase(value);
+  let slug = baseSlug;
+  let suffix = 2;
+
+  while (
+    await Product.exists({
+      slug,
+      ...(excludeMongoId ? { _id: { $ne: excludeMongoId } } : {}),
+    })
+  ) {
+    slug = `${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+
+  return slug;
+};
+
+const resolveProductIdentifier = async (identifier) => {
+  const normalizedIdentifier = createSlugBase(identifier);
+  const slugMatch = await Product.findOne({ slug: normalizedIdentifier }).populate(
+    "reviews.userId",
+    "name"
+  );
+
+  if (slugMatch) return slugMatch;
+
+  if (isObjectId(identifier)) {
+    return Product.findById(identifier).populate("reviews.userId", "name");
+  }
+
+  if (/^\d+$/.test(identifier)) {
+    return Product.findOne({ id: Number(identifier) }).populate(
+      "reviews.userId",
+      "name"
+    );
+  }
+
+  return null;
+};
+
 //Creating API for Adding Product
 
 app.post("/addproduct", verifyToken, verifyAdmin, async (req, res) => {
@@ -368,15 +470,40 @@ app.post("/addproduct", verifyToken, verifyAdmin, async (req, res) => {
     id = 1;
   }
 
+  const requestedSlug = String(req.body.slug || "").trim();
+  const slug = requestedSlug
+    ? createSlugBase(requestedSlug)
+    : await generateUniqueProductSlug(req.body.name);
+
+  if (requestedSlug && (await Product.exists({ slug }))) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Product slug already exists" });
+  }
+
   const product = new Product({
     id: id,
     name: req.body.name,
+    slug,
     image: req.body.image,
     category: req.body.category,
     quantity: req.body.quantity,
     description: req.body.description,
     new_price: req.body.new_price,
     old_price: req.body.old_price,
+    variants: normalizeVariants(req.body.variants),
+    featured: Boolean(req.body.featured),
+    isOffer: Boolean(req.body.isOffer),
+    offerText: req.body.offerText || "",
+    offerBadge: req.body.offerBadge || "",
+    displayOrder: Number(req.body.displayOrder) || 0,
+    isVisible:
+      typeof req.body.isVisible === "undefined" ? true : Boolean(req.body.isVisible),
+    productLabel: req.body.productLabel || "",
+    stockQuantity:
+      req.body.stockQuantity === "" || typeof req.body.stockQuantity === "undefined"
+        ? undefined
+        : Number(req.body.stockQuantity),
     suitableAge: req.body.suitableAge,
     benefits: req.body.benefits,
     ingredients: req.body.ingredients,
@@ -412,7 +539,28 @@ app.post("/removeproduct", verifyToken, verifyAdmin, async (req, res) => {
 
 app.get("/allproducts", async (req, res) => {
   try {
-    const products = await Product.find({});
+    const includeHidden = truthyQuery(req.query.includeHidden);
+    if (includeHidden) {
+      const bearerHeader = req.headers["authorization"];
+      const token = bearerHeader?.split(" ")[1];
+      let decoded = null;
+      try {
+        decoded = token ? jwt.verify(token, process.env.JWT_SECRET) : null;
+      } catch {
+        return res.status(403).json({ success: false, message: "Access denied" });
+      }
+      const user = decoded?.user?.id ? await Users.findById(decoded.user.id) : null;
+      if (!user || user.role !== "admin") {
+        return res.status(403).json({ success: false, message: "Access denied" });
+      }
+    }
+
+    const query = includeHidden ? {} : { isVisible: { $ne: false } };
+    const products = await Product.find(query).sort({
+      displayOrder: 1,
+      date: -1,
+      _id: 1,
+    });
 
     const productsWithRating = products.map((product) => {
       const avgRating =
@@ -447,7 +595,17 @@ app.post("/updateproduct", verifyToken, verifyAdmin, async (req, res) => {
     quantity,
     new_price,
     old_price,
+    slug,
     suitableAge,
+    variants,
+    featured,
+    isOffer,
+    offerText,
+    offerBadge,
+    displayOrder,
+    isVisible,
+    productLabel,
+    stockQuantity,
     benefits,
     ingredients,
     allergenNote,
@@ -460,10 +618,34 @@ app.post("/updateproduct", verifyToken, verifyAdmin, async (req, res) => {
   } = req.body;
 
   try {
+    const existingProduct = await Product.findOne({ id });
+
+    if (!existingProduct) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Product not found" });
+    }
+
+    const requestedSlug = String(slug || "").trim();
+    const nextSlug = requestedSlug
+      ? createSlugBase(requestedSlug)
+      : existingProduct.slug || (await generateUniqueProductSlug(name, existingProduct._id));
+    const duplicateSlug = await Product.exists({
+      slug: nextSlug,
+      _id: { $ne: existingProduct._id },
+    });
+
+    if (duplicateSlug) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Product slug already exists" });
+    }
+
     const updatedProduct = await Product.findOneAndUpdate(
       { id: id },
       {
         name,
+        slug: nextSlug,
         description,
         image,
         category,
@@ -471,6 +653,19 @@ app.post("/updateproduct", verifyToken, verifyAdmin, async (req, res) => {
         new_price,
         old_price,
         suitableAge,
+        variants: normalizeVariants(variants),
+        featured: Boolean(featured),
+        isOffer: Boolean(isOffer),
+        offerText: offerText || "",
+        offerBadge: offerBadge || "",
+        displayOrder: Number(displayOrder) || 0,
+        isVisible:
+          typeof isVisible === "undefined" ? true : Boolean(isVisible),
+        productLabel: productLabel || "",
+        stockQuantity:
+          stockQuantity === "" || typeof stockQuantity === "undefined"
+            ? undefined
+            : Number(stockQuantity),
         benefits,
         ingredients,
         allergenNote,
@@ -505,6 +700,11 @@ const CartItemSchema = new mongoose.Schema({
     ref: "Product",
     required: true,
   },
+  variantId: { type: mongoose.Schema.Types.ObjectId },
+  selectedVariant: {
+    name: { type: String },
+    price: { type: Number },
+  },
   quantity: { type: Number, required: true, default: 1 },
 });
 
@@ -518,7 +718,7 @@ const Cart = mongoose.model("Cart", CartSchema);
 // Creating endpoint for adding products in cart data
 
 app.post("/cart/add", verifyToken, async (req, res) => {
-  const { userId, productId, quantity = 1 } = req.body;
+  const { userId, productId, variantId, quantity = 1 } = req.body;
   const ownerId = req.user.id;
 
   console.log("Adding to cart - userId:", userId, "productId:", productId);
@@ -534,6 +734,28 @@ app.post("/cart/add", verifyToken, async (req, res) => {
   }
 
   try {
+    const requestedQuantity = Number(quantity);
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid quantity" });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    const selectedVariant = variantId
+      ? product.variants.id(variantId)
+      : product.variants?.length
+        ? product.variants[0]
+        : null;
+
+    if (product.variants?.length && !selectedVariant) {
+      return res.status(400).json({ success: false, message: "Please select a valid variant" });
+    }
+
+    ensurePurchasable(product, selectedVariant, requestedQuantity);
+
     let cart = await Cart.findOne({ userId: ownerId });
 
     if (!cart) {
@@ -541,13 +763,23 @@ app.post("/cart/add", verifyToken, async (req, res) => {
     }
 
     const existingItem = cart.items.find(
-      (item) => item.productId.toString() === productId
+      (item) =>
+        item.productId.toString() === productId &&
+        String(item.variantId || "") === String(selectedVariant?._id || "")
     );
 
     if (existingItem) {
-      existingItem.quantity += quantity;
+      ensurePurchasable(product, selectedVariant, existingItem.quantity + requestedQuantity);
+      existingItem.quantity += requestedQuantity;
     } else {
-      cart.items.push({ productId, quantity });
+      cart.items.push({
+        productId,
+        variantId: selectedVariant?._id,
+        selectedVariant: selectedVariant
+          ? { name: selectedVariant.name, price: selectedVariant.price }
+          : undefined,
+        quantity: requestedQuantity,
+      });
     }
 
     await cart.save();
@@ -561,7 +793,7 @@ app.post("/cart/add", verifyToken, async (req, res) => {
 
 // POST /cart/update
 app.post("/cart/update", verifyToken, async (req, res) => {
-  const { userId, productId, quantity } = req.body;
+  const { userId, productId, variantId, quantity } = req.body;
   const ownerId = req.user.id;
 
   if (userId && userId !== ownerId) {
@@ -577,7 +809,9 @@ app.post("/cart/update", verifyToken, async (req, res) => {
         .json({ success: false, message: "Cart not found" });
 
     const item = cart.items.find(
-      (item) => item.productId.toString() === productId
+      (item) =>
+        item.productId.toString() === productId &&
+        String(item.variantId || "") === String(variantId || "")
     );
 
     if (!item)
@@ -587,9 +821,19 @@ app.post("/cart/update", verifyToken, async (req, res) => {
 
     if (quantity <= 0) {
       cart.items = cart.items.filter(
-        (item) => item.productId.toString() !== productId
+        (item) =>
+          !(
+            item.productId.toString() === productId &&
+            String(item.variantId || "") === String(variantId || "")
+          )
       );
     } else {
+      const product = await Product.findById(productId);
+      if (!product) {
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
+      const selectedVariant = variantId ? product.variants.id(variantId) : null;
+      ensurePurchasable(product, selectedVariant, Number(quantity));
       item.quantity = quantity;
     }
 
@@ -604,7 +848,7 @@ app.post("/cart/update", verifyToken, async (req, res) => {
 
 // POST /cart/remove
 app.post("/cart/remove", verifyToken, async (req, res) => {
-  const { userId, productId } = req.body;
+  const { userId, productId, variantId } = req.body;
   const ownerId = req.user.id;
 
   if (userId && userId !== ownerId) {
@@ -617,7 +861,11 @@ app.post("/cart/remove", verifyToken, async (req, res) => {
     if (!cart) return res.status(404).json({ success: false });
 
     cart.items = cart.items.filter(
-      (item) => item.productId.toString() !== productId
+      (item) =>
+        !(
+          item.productId.toString() === productId &&
+          String(item.variantId || "") === String(variantId || "")
+        )
     );
 
     await cart.save();
@@ -781,6 +1029,11 @@ const orderSchema = new mongoose.Schema({
       },
       quantity: { type: Number, required: true },
       priceAtPurchase: { type: Number, required: true },
+      variantId: { type: mongoose.Schema.Types.ObjectId },
+      selectedVariant: {
+        name: { type: String },
+        price: { type: Number },
+      },
     },
   ],
   codFee: { type: Number, default: 0 },
@@ -862,13 +1115,33 @@ const calculateOrderPricing = async ({
       throw error;
     }
 
-    const priceAtPurchase = Number(product.new_price);
+    const selectedVariant = item.variantId
+      ? product.variants.id(item.variantId)
+      : product.variants?.length
+        ? product.variants[0]
+        : null;
+
+    if (product.variants?.length && !selectedVariant) {
+      const error = new Error("Please select a valid product variant");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    ensurePurchasable(product, selectedVariant, quantity);
+
+    const priceAtPurchase = selectedVariant
+      ? Number(selectedVariant.price)
+      : Number(product.new_price);
     subtotal += priceAtPurchase * quantity;
 
     orderItems.push({
       productId: product._id,
       quantity,
       priceAtPurchase,
+      variantId: selectedVariant?._id,
+      selectedVariant: selectedVariant
+        ? { name: selectedVariant.name, price: selectedVariant.price }
+        : undefined,
     });
   }
 
@@ -1013,6 +1286,8 @@ app.get("/order/myorders", verifyToken, async (req, res) => {
               name: "Product Deleted",
             },
         quantity: item.quantity,
+        selectedVariant: item.selectedVariant || null,
+        priceAtPurchase: item.priceAtPurchase,
       })),
       address: {
         fullName: order.addressId.fullName,
@@ -1122,6 +1397,8 @@ app.get("/admin/orders", verifyToken, verifyAdmin, async (req, res) => {
           name: item.productId?.name || "Unknown Product",
         },
         quantity: item.quantity,
+        selectedVariant: item.selectedVariant || null,
+        priceAtPurchase: item.priceAtPurchase,
       })),
       address: {
         fullName: order.addressId?.fullName || "N/A",
@@ -1362,14 +1639,14 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/product/:id", async (req, res) => {
+app.get("/product/:identifier", async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).populate(
-      "reviews.userId",
-      "name"
-    );
+    const product = await resolveProductIdentifier(req.params.identifier);
 
     if (!product) return res.status(404).json({ message: "Product not found" });
+    if (product.isVisible === false) {
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     const averageRating =
       product.reviews.length > 0
