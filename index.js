@@ -379,7 +379,10 @@ const Product = mongoose.model("Product", {
 
 const truthyQuery = (value) => value === true || value === "true" || value === "1";
 const hasFiniteNumber = (value) => Number.isFinite(Number(value));
-const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+const isObjectId = (value) =>
+  typeof value === "string" &&
+  /^[0-9a-fA-F]{24}$/.test(value) &&
+  mongoose.Types.ObjectId.isValid(value);
 const normalizeVariants = (variants = []) =>
   Array.isArray(variants)
     ? variants
@@ -1633,8 +1636,8 @@ app.post("/reviews/:productId", verifyToken, async (req, res) => {
     );
 
     res.status(201).json(updatedProduct);
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error("Review creation failed:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -1658,8 +1661,8 @@ app.get("/product/:identifier", async (req, res) => {
       ...product.toObject(),
       averageRating,
     });
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error("Product lookup failed:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
