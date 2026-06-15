@@ -65,7 +65,7 @@ const upload = multer({ storage });
 
 // app.use("/images", express.static("upload/images"));
 
-app.post("/upload", upload.array("product", 4), (req, res) => {
+app.post("/upload", verifyToken, verifyAdmin, upload.array("product", 4), (req, res) => {
   try {
     const image_urls = req.files.map((file) => file.path);
     res.json({
@@ -143,7 +143,7 @@ app.post("/signup", async (req, res) => {
 });
 
 //for security
-const verifyToken = (req, res, next) => {
+function verifyToken(req, res, next) {
   const bearerHeader = req.headers["authorization"];
 
   if (typeof bearerHeader === "undefined") {
@@ -164,7 +164,32 @@ const verifyToken = (req, res, next) => {
     req.user = user.user;
     next();
   });
-};
+}
+
+async function verifyAdmin(req, res, next) {
+  try {
+    const user = await Users.findById(req.user.id);
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Admin verification error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+function verifyOwnUserParam(paramName = "userId") {
+  return (req, res, next) => {
+    if (req.params[paramName] !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    next();
+  };
+}
 
 // Creating Endpoint for user login
 
@@ -312,12 +337,27 @@ const Product = mongoose.model("Product", {
     type: Boolean,
     default: true,
   },
+  suitableAge: { type: String, default: "" },
+  benefits: { type: [String], default: [] },
+  ingredients: { type: [String], default: [] },
+  allergenNote: { type: String, default: "" },
+  safetyNote: { type: String, default: "" },
+  preparationInstructions: { type: [String], default: [] },
+  storageInstructions: { type: String, default: "" },
+  shelfLife: { type: String, default: "" },
+  deliveryInfo: { type: String, default: "" },
+  faqs: [
+    {
+      question: { type: String },
+      answer: { type: String },
+    },
+  ],
   reviews: [reviewSchema],
 });
 
 //Creating API for Adding Product
 
-app.post("/addproduct", async (req, res) => {
+app.post("/addproduct", verifyToken, verifyAdmin, async (req, res) => {
   let products = await Product.find({});
   let id;
   if (products.length > 0) {
@@ -337,6 +377,16 @@ app.post("/addproduct", async (req, res) => {
     description: req.body.description,
     new_price: req.body.new_price,
     old_price: req.body.old_price,
+    suitableAge: req.body.suitableAge,
+    benefits: req.body.benefits,
+    ingredients: req.body.ingredients,
+    allergenNote: req.body.allergenNote,
+    safetyNote: req.body.safetyNote,
+    preparationInstructions: req.body.preparationInstructions,
+    storageInstructions: req.body.storageInstructions,
+    shelfLife: req.body.shelfLife,
+    deliveryInfo: req.body.deliveryInfo,
+    faqs: req.body.faqs,
   });
   console.log(product);
   await product.save();
@@ -349,7 +399,7 @@ app.post("/addproduct", async (req, res) => {
 
 //Creating API for Deleting Product
 
-app.post("/removeproduct", async (req, res) => {
+app.post("/removeproduct", verifyToken, verifyAdmin, async (req, res) => {
   await Product.findOneAndDelete({ id: req.body.id });
   console.log("Removed");
   res.json({
@@ -387,9 +437,27 @@ app.get("/allproducts", async (req, res) => {
 });
 
 // API: /updateproduct
-app.post("/updateproduct", async (req, res) => {
-  const { id, name, description, image, category, new_price, old_price } =
-    req.body;
+app.post("/updateproduct", verifyToken, verifyAdmin, async (req, res) => {
+  const {
+    id,
+    name,
+    description,
+    image,
+    category,
+    quantity,
+    new_price,
+    old_price,
+    suitableAge,
+    benefits,
+    ingredients,
+    allergenNote,
+    safetyNote,
+    preparationInstructions,
+    storageInstructions,
+    shelfLife,
+    deliveryInfo,
+    faqs,
+  } = req.body;
 
   try {
     const updatedProduct = await Product.findOneAndUpdate(
@@ -399,8 +467,19 @@ app.post("/updateproduct", async (req, res) => {
         description,
         image,
         category,
+        quantity,
         new_price,
         old_price,
+        suitableAge,
+        benefits,
+        ingredients,
+        allergenNote,
+        safetyNote,
+        preparationInstructions,
+        storageInstructions,
+        shelfLife,
+        deliveryInfo,
+        faqs,
       },
       { new: true }
     );
@@ -438,22 +517,27 @@ const Cart = mongoose.model("Cart", CartSchema);
 
 // Creating endpoint for adding products in cart data
 
-app.post("/cart/add", async (req, res) => {
+app.post("/cart/add", verifyToken, async (req, res) => {
   const { userId, productId, quantity = 1 } = req.body;
+  const ownerId = req.user.id;
 
   console.log("Adding to cart - userId:", userId, "productId:", productId);
 
-  if (!userId || !productId) {
+  if (userId && userId !== ownerId) {
+    return res.status(403).json({ success: false, message: "Access denied" });
+  }
+
+  if (!productId) {
     return res
       .status(400)
-      .json({ success: false, message: "Missing userId or productId" });
+      .json({ success: false, message: "Missing productId" });
   }
 
   try {
-    let cart = await Cart.findOne({ userId });
+    let cart = await Cart.findOne({ userId: ownerId });
 
     if (!cart) {
-      cart = new Cart({ userId, items: [] });
+      cart = new Cart({ userId: ownerId, items: [] });
     }
 
     const existingItem = cart.items.find(
@@ -476,11 +560,16 @@ app.post("/cart/add", async (req, res) => {
 });
 
 // POST /cart/update
-app.post("/cart/update", async (req, res) => {
+app.post("/cart/update", verifyToken, async (req, res) => {
   const { userId, productId, quantity } = req.body;
+  const ownerId = req.user.id;
+
+  if (userId && userId !== ownerId) {
+    return res.status(403).json({ success: false, message: "Access denied" });
+  }
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId: ownerId });
 
     if (!cart)
       return res
@@ -514,11 +603,16 @@ app.post("/cart/update", async (req, res) => {
 });
 
 // POST /cart/remove
-app.post("/cart/remove", async (req, res) => {
+app.post("/cart/remove", verifyToken, async (req, res) => {
   const { userId, productId } = req.body;
+  const ownerId = req.user.id;
+
+  if (userId && userId !== ownerId) {
+    return res.status(403).json({ success: false, message: "Access denied" });
+  }
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId: ownerId });
 
     if (!cart) return res.status(404).json({ success: false });
 
@@ -536,7 +630,7 @@ app.post("/cart/remove", async (req, res) => {
 });
 
 // GET /cart/:userId
-app.get("/cart/:userId", async (req, res) => {
+app.get("/cart/:userId", verifyToken, verifyOwnUserParam("userId"), async (req, res) => {
   try {
     const cart = await Cart.findOne({ userId: req.params.userId }).populate(
       "items.productId"
@@ -690,6 +784,10 @@ const orderSchema = new mongoose.Schema({
     },
   ],
   codFee: { type: Number, default: 0 },
+  subtotal: { type: Number, default: 0 },
+  shippingFee: { type: Number, default: 0 },
+  discountAmount: { type: Number, default: 0 },
+  finalTotal: { type: Number, default: 0 },
   totalAmount: { type: Number, required: true },
   paymentMethod: {
     type: String,
@@ -703,7 +801,15 @@ const orderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
-    enum: ["placed", "shipped", "delivered", "cancelled"],
+    enum: [
+      "pending",
+      "placed",
+      "confirmed",
+      "packed",
+      "shipped",
+      "delivered",
+      "cancelled",
+    ],
     default: "placed",
   },
   coupon: {
@@ -723,6 +829,93 @@ const orderSchema = new mongoose.Schema({
 
 const Order = mongoose.model("Order", orderSchema);
 
+const SHIPPING_CHARGE = 50;
+const FREE_SHIPPING_MINIMUM = 450;
+const COD_CONVENIENCE_FEE = 30;
+
+const toMoney = (amount) => Math.max(0, Math.round(Number(amount || 0)));
+
+const calculateOrderPricing = async ({
+  items,
+  userId,
+  couponCode,
+  includeCodFee = false,
+}) => {
+  const orderItems = [];
+  let subtotal = 0;
+
+  // Recalculate every line item from database prices so the client cannot
+  // change product price, quantity math, shipping, or discount totals.
+  for (const item of items) {
+    const quantity = Number(item.quantity);
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      const error = new Error("Invalid item quantity");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const product = await Product.findById(item.productId);
+    if (!product) {
+      const error = new Error("Product not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const priceAtPurchase = Number(product.new_price);
+    subtotal += priceAtPurchase * quantity;
+
+    orderItems.push({
+      productId: product._id,
+      quantity,
+      priceAtPurchase,
+    });
+  }
+
+  subtotal = toMoney(subtotal);
+
+  let discountAmount = 0;
+  let appliedCoupon;
+
+  if (couponCode) {
+    const claimedCoupon = await ClaimedCoupon.findOne({
+      code: couponCode.trim(),
+      userId,
+      status: "Not Used",
+    });
+
+    if (
+      claimedCoupon &&
+      claimedCoupon.rewardType === "discount" &&
+      Number(claimedCoupon.rewardValue) > 0
+    ) {
+      discountAmount = Math.min(
+        subtotal,
+        toMoney(Number(claimedCoupon.rewardValue))
+      );
+      appliedCoupon = claimedCoupon;
+    }
+  }
+
+  const discountedSubtotal = toMoney(subtotal - discountAmount);
+  const shippingFee =
+    orderItems.length === 0 || discountedSubtotal >= FREE_SHIPPING_MINIMUM
+      ? 0
+      : SHIPPING_CHARGE;
+  const codFee = includeCodFee ? COD_CONVENIENCE_FEE : 0;
+  const finalTotal = toMoney(discountedSubtotal + shippingFee + codFee);
+
+  return {
+    orderItems,
+    subtotal,
+    shippingFee,
+    discountAmount,
+    codFee,
+    finalTotal,
+    appliedCoupon,
+  };
+};
+
 // POST /order/create
 app.post("/order/create", verifyToken, async (req, res) => {
   try {
@@ -733,21 +926,11 @@ app.post("/order/create", verifyToken, async (req, res) => {
       paymentStatus,
       razorpayOrderId,
       couponCode,
-      rewardType,
-      rewardValue,
-      codFee,
-      totalAmount, // ✅ frontend calculated total
     } = req.body;
 
     const userId = req.user.id;
 
-    if (
-      !userId ||
-      !addressId ||
-      !items ||
-      items.length === 0 ||
-      totalAmount == null
-    ) {
+    if (!userId || !addressId || !items || items.length === 0) {
       return res.status(400).json({ message: "Missing required order data" });
     }
 
@@ -759,44 +942,39 @@ app.post("/order/create", verifyToken, async (req, res) => {
       }
     }
 
-    // Validate items and capture priceAtPurchase
-    const orderItems = [];
-
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      if (!product) {
-        return res.status(404).json({ message: "Product not found" });
-      }
-
-      orderItems.push({
-        productId: product._id,
-        quantity: item.quantity,
-        priceAtPurchase: product.new_price,
-      });
-    }
+    const pricing = await calculateOrderPricing({
+      items,
+      userId,
+      couponCode,
+      includeCodFee: paymentMethod === "cod",
+    });
 
     const newOrder = await Order.create({
       userId,
       addressId,
-      items: orderItems,
-      totalAmount, // ✅ use trusted frontend amount
-      codFee: codFee || 0, // ✅ store separately
+      items: pricing.orderItems,
+      subtotal: pricing.subtotal,
+      shippingFee: pricing.shippingFee,
+      discountAmount: pricing.discountAmount,
+      finalTotal: pricing.finalTotal,
+      totalAmount: pricing.finalTotal,
+      codFee: pricing.codFee,
       paymentMethod,
       paymentStatus: paymentStatus || "pending",
       razorpayOrderId,
-      coupon: couponCode
+      coupon: pricing.appliedCoupon
         ? {
-            code: couponCode,
-            rewardType,
-            rewardValue,
+            code: pricing.appliedCoupon.code,
+            rewardType: pricing.appliedCoupon.rewardType,
+            rewardValue: pricing.appliedCoupon.rewardValue,
           }
         : undefined,
     });
 
     // Mark coupon as used
-    if (couponCode) {
+    if (pricing.appliedCoupon) {
       await ClaimedCoupon.findOneAndUpdate(
-        { code: couponCode, userId },
+        { code: pricing.appliedCoupon.code, userId },
         { $set: { status: "Used" } }
       );
     }
@@ -804,6 +982,9 @@ app.post("/order/create", verifyToken, async (req, res) => {
     return res.status(201).json({ success: true, order: newOrder });
   } catch (err) {
     console.error("Order creation error:", err);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     return res
       .status(500)
       .json({ message: "Server error while creating order" });
@@ -841,6 +1022,10 @@ app.get("/order/myorders", verifyToken, async (req, res) => {
         phoneNumber: order.addressId.phoneNumber,
       },
       amount: order.totalAmount,
+      subtotal: order.subtotal,
+      shippingFee: order.shippingFee,
+      discountAmount: order.discountAmount,
+      finalTotal: order.finalTotal,
       date: order.createdAt,
       status: order.orderStatus,
       paymentMethod: order.paymentMethod,
@@ -913,21 +1098,25 @@ const Orders = mongoose.model("Orders", {
 //     res.status(500).json({ success: false, message: "Internal server error" });
 //   }
 // });
-app.get("/admin/orders", verifyToken, async (req, res) => {
+const ORDER_STATUSES = [
+  "pending",
+  "confirmed",
+  "packed",
+  "shipped",
+  "delivered",
+  "cancelled",
+];
+
+app.get("/admin/orders", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const user = await Users.findById(userId);
-
-    if (!user || user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const orders = await Order.find({})
       .populate("items.productId")
       .populate("addressId")
       .sort({ createdAt: -1 });
 
     const formattedOrders = orders.map((order) => ({
+      id: order._id,
+      _id: order._id,
       items: order.items.map((item) => ({
         product: {
           name: item.productId?.name || "Unknown Product",
@@ -942,6 +1131,10 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
         phoneNumber: order.addressId?.phoneNumber || "N/A",
       },
       amount: order.totalAmount,
+      subtotal: order.subtotal,
+      shippingFee: order.shippingFee,
+      discountAmount: order.discountAmount,
+      finalTotal: order.finalTotal,
       date: order.createdAt,
       status: order.orderStatus,
       paymentMethod: order.paymentMethod,
@@ -955,6 +1148,41 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
   }
 });
 
+app.put("/admin/orders/:id/status", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { status } = req.body;
+
+    if (!ORDER_STATUSES.includes(status)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid order status" });
+    }
+
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { orderStatus: status },
+      { new: true }
+    );
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    return res.json({
+      success: true,
+      message: "Order status updated",
+      order,
+    });
+  } catch (error) {
+    console.error("Order status update error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
 
 //api for razorpay
 const razorpay = new Razorpay({
@@ -964,7 +1192,7 @@ const razorpay = new Razorpay({
 
 app.post("/razorpay/create-order", verifyToken, async (req, res) => {
   try {
-    const { addressId, items, couponCode, rewardType, rewardValue } = req.body;
+    const { addressId, items, couponCode } = req.body;
 
     const userId = req.user.id;
 
@@ -972,49 +1200,37 @@ app.post("/razorpay/create-order", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "Missing required data" });
     }
 
-    let totalAmount = 0;
-    const orderItems = [];
-
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      if (!product)
-        return res.status(404).json({ message: "Product not found" });
-
-      const itemTotal = product.new_price * item.quantity;
-      totalAmount += itemTotal;
-
-      orderItems.push({
-        productId: product._id,
-        quantity: item.quantity,
-        priceAtPurchase: product.new_price,
-      });
-    }
-
-    // ✅ Apply discount if applicable
-    if (couponCode && rewardType === "discount" && rewardValue > 0) {
-      totalAmount = Math.floor(totalAmount - rewardValue);
-    }
+    const pricing = await calculateOrderPricing({
+      items,
+      userId,
+      couponCode,
+      includeCodFee: false,
+    });
 
     // STEP 1: Create Order in MongoDB (with coupon details if any)
     const newOrder = await Order.create({
       userId,
       addressId,
-      items: orderItems,
-      totalAmount,
+      items: pricing.orderItems,
+      subtotal: pricing.subtotal,
+      shippingFee: pricing.shippingFee,
+      discountAmount: pricing.discountAmount,
+      finalTotal: pricing.finalTotal,
+      totalAmount: pricing.finalTotal,
       paymentMethod: "razorpay",
       paymentStatus: "pending",
-      coupon: couponCode
+      coupon: pricing.appliedCoupon
         ? {
-            code: couponCode,
-            rewardType,
-            rewardValue,
+            code: pricing.appliedCoupon.code,
+            rewardType: pricing.appliedCoupon.rewardType,
+            rewardValue: pricing.appliedCoupon.rewardValue,
           }
         : undefined,
     });
 
     // STEP 2: Create Razorpay Order
     const razorpayOrder = await razorpay.orders.create({
-      amount: totalAmount * 100, // in paise
+      amount: pricing.finalTotal * 100, // in paise
       currency: "INR",
       receipt: `receipt_order_${newOrder._id}`,
       payment_capture: 1,
@@ -1028,9 +1244,18 @@ app.post("/razorpay/create-order", verifyToken, async (req, res) => {
       success: true,
       razorpayOrder,
       mongoOrderId: newOrder._id,
+      pricing: {
+        subtotal: pricing.subtotal,
+        shippingFee: pricing.shippingFee,
+        discountAmount: pricing.discountAmount,
+        finalTotal: pricing.finalTotal,
+      },
     });
   } catch (err) {
     console.error("Create Razorpay Order Failed:", err);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     return res
       .status(500)
       .json({ message: "Server error creating Razorpay order" });
@@ -1261,8 +1486,7 @@ app.post("/contact", async (req, res) => {
 });
 
 //api for messages displaing in Admin page
-app.get("/contacts", async (req, res) => {
-  // Optional: Check if admin
+app.get("/contacts", verifyToken, verifyAdmin, async (req, res) => {
   const messages = await Contact.find().sort({ createdAt: -1 });
   res.json(messages);
 });
@@ -1289,13 +1513,18 @@ const couponSchema = new mongoose.Schema({
 const Coupon = mongoose.model("Coupon", couponSchema);
 
 // API route for claiming a coupon
-app.post("/coupon/claim", async (req, res) => {
+app.post("/coupon/claim", verifyToken, async (req, res) => {
   const { code, userId } = req.body;
+  const ownerId = req.user.id;
 
-  if (!code || !userId) {
+  if (userId && userId !== ownerId) {
+    return res.status(403).json({ success: false, msg: "Access denied." });
+  }
+
+  if (!code) {
     return res
       .status(400)
-      .json({ success: false, msg: "Code and User ID are required." });
+      .json({ success: false, msg: "Coupon code is required." });
   }
 
   try {
@@ -1313,12 +1542,12 @@ app.post("/coupon/claim", async (req, res) => {
 
     // Mark coupon as claimed
     coupon.claimed = true;
-    coupon.claimedBy = userId;
+    coupon.claimedBy = ownerId;
     await coupon.save();
 
     // Add to ClaimedCoupon collection
     const claimed = new ClaimedCoupon({
-      userId,
+      userId: ownerId,
       code: coupon.code,
       rewardValue: coupon.rewardValue, // match with frontend
       rewardType: coupon.rewardType,
@@ -1328,9 +1557,9 @@ app.post("/coupon/claim", async (req, res) => {
 
     // Add this inside your try block, after coupon is claimed and saved
     if (coupon.rewardType === "points") {
-      await ClaimedCoupon.updateOne({ code, userId }, { status: "Used" });
+      await ClaimedCoupon.updateOne({ code, userId: ownerId }, { status: "Used" });
 
-      const user = await Users.findById(userId);
+      const user = await Users.findById(ownerId);
       if (user) {
         user.spoonPoints =
           (user.spoonPoints || 0) + parseInt(coupon.rewardValue);
@@ -1352,7 +1581,7 @@ app.post("/coupon/claim", async (req, res) => {
 });
 
 // Coupon Insert API
-app.post("/insert-coupons", async (req, res) => {
+app.post("/insert-coupons", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const coupons = req.body;
 
@@ -1391,7 +1620,7 @@ const claimedCouponSchema = new mongoose.Schema({
 const ClaimedCoupon = mongoose.model("ClaimedCoupon", claimedCouponSchema);
 
 // GET /coupon/claimed/:userId
-app.get("/coupon/claimed/:userId", async (req, res) => {
+app.get("/coupon/claimed/:userId", verifyToken, verifyOwnUserParam("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const claimedCoupons = await ClaimedCoupon.find({ userId }).sort({
