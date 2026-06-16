@@ -16,6 +16,7 @@ const rateLimit = require("express-rate-limit");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+const { OAuth2Client } = require("google-auth-library");
 const { createSlugBase } = require("./utils/slug");
 
 app.use(helmet());
@@ -61,6 +62,28 @@ const storage = new CloudinaryStorage({
 });
 
 const upload = multer({ storage });
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+const createAuthToken = (user) =>
+  jwt.sign(
+    {
+      user: {
+        id: user.id,
+        role: user.role,
+      },
+    },
+    process.env.JWT_SECRET
+  );
+
+const createEmptyCart = () => {
+  const cart = {};
+  for (let i = 0; i < 300; i++) {
+    cart[i] = 0;
+  }
+  return cart;
+};
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 //Creating Upload Endpoint for Images
 
@@ -92,6 +115,23 @@ const Users = mongoose.model("Users", {
   password: {
     type: String,
   },
+  googleId: {
+    type: String,
+    unique: true,
+    sparse: true,
+  },
+  authProvider: {
+    type: String,
+    enum: ["local", "google"],
+    default: "local",
+  },
+  profileImage: {
+    type: String,
+  },
+  emailVerified: {
+    type: Boolean,
+    default: false,
+  },
   cartData: {
     type: Object,
   },
@@ -118,28 +158,19 @@ app.post("/signup", async (req, res) => {
       errors: "Existing user found with same email address",
     });
   }
-  let cart = {};
-  for (let i = 0; i < 300; i++) {
-    cart[i] = 0;
-  }
   const hashedPassword = await bcrypt.hash(req.body.password, 10);
   const user = new Users({
     name: req.body.name,
     email: req.body.email,
     password: hashedPassword,
-    cartData: cart,
+    authProvider: "local",
+    cartData: createEmptyCart(),
     role: "user",
   });
 
   await user.save();
 
-  const data = {
-    user: {
-      id: user.id,
-    },
-  };
-
-  const token = jwt.sign(data, process.env.JWT_SECRET);
+  const token = createAuthToken(user);
   res.json({ success: true, token });
 });
 
@@ -197,21 +228,121 @@ function verifyOwnUserParam(paramName = "userId") {
 app.post("/login", async (req, res) => {
   let user = await Users.findOne({ email: req.body.email });
   if (user) {
+    if (!user.password) {
+      return res.json({
+        success: false,
+        errors: "Please continue with Google for this account.",
+      });
+    }
+
     const passCompare = await bcrypt.compare(req.body.password, user.password);
     if (passCompare) {
-      const data = {
-        user: {
-          id: user.id,
-          role: user.role,
-        },
-      };
-      const token = jwt.sign(data, process.env.JWT_SECRET);
+      const token = createAuthToken(user);
       res.json({ success: true, token });
     } else {
       res.json({ success: false, errors: "Wrong Password" });
     }
   } else {
     res.json({ success: false, errors: "Wrong Email Id" });
+  }
+});
+
+app.post("/auth/google", async (req, res) => {
+  try {
+    const { credential } = req.body;
+
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(500).json({
+        success: false,
+        errors: "Google login is not configured on the server.",
+      });
+    }
+
+    if (!credential) {
+      return res
+        .status(400)
+        .json({ success: false, errors: "Missing Google credential." });
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload?.email || !payload?.sub) {
+      return res
+        .status(401)
+        .json({ success: false, errors: "Invalid Google account." });
+    }
+
+    if (!payload.email_verified) {
+      return res.status(401).json({
+        success: false,
+        errors: "Please verify your Google email before continuing.",
+      });
+    }
+
+    const email = payload.email.toLowerCase();
+    const emailRegex = new RegExp(`^${escapeRegExp(email)}$`, "i");
+    let user = await Users.findOne({ email: emailRegex });
+
+    if (user?.role === "admin") {
+      return res.status(403).json({
+        success: false,
+        errors: "Google login is available for customer accounts only.",
+      });
+    }
+
+    if (user) {
+      let changed = false;
+
+      if (!user.googleId) {
+        user.googleId = payload.sub;
+        changed = true;
+      } else if (user.googleId !== payload.sub) {
+        return res.status(409).json({
+          success: false,
+          errors: "This email is already linked to a different Google account.",
+        });
+      }
+
+      if (!user.authProvider) {
+        user.authProvider = user.password ? "local" : "google";
+        changed = true;
+      }
+      if (!user.profileImage && payload.picture) {
+        user.profileImage = payload.picture;
+        changed = true;
+      }
+      if (!user.emailVerified) {
+        user.emailVerified = true;
+        changed = true;
+      }
+      if (changed) await user.save();
+    } else {
+      user = new Users({
+        name: payload.name || email.split("@")[0],
+        email,
+        googleId: payload.sub,
+        authProvider: "google",
+        profileImage: payload.picture,
+        emailVerified: true,
+        cartData: createEmptyCart(),
+        role: "user",
+      });
+
+      await user.save();
+    }
+
+    const token = createAuthToken(user);
+    res.json({ success: true, token });
+  } catch (error) {
+    console.error("Google auth error:", error);
+    res.status(401).json({
+      success: false,
+      errors: "Google login failed. Please try again.",
+    });
   }
 });
 
